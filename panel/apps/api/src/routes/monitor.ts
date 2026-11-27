@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { logAudit } from "../db/schema";
 import { getVpsHealth } from "../services/alert";
+import { computeScaleAdvisories, getMetricsHistory } from "../services/metrics";
 import { getAllPoolStats } from "../services/pgbouncer";
 import {
   getDatabaseSizesAndCacheHit,
@@ -24,8 +25,35 @@ export const monitorRoutes = new Elysia({ prefix: "/monitor" })
       getDatabaseSizesAndCacheHit().catch(() => []),
       getAllPoolStats(),
     ]);
-    return { vps, databases, pools };
+    const totalDbBytes = databases.reduce((s, d) => s + d.size_bytes, 0);
+    const activeBackends = databases.reduce((s, d) => s + d.active_backends, 0);
+    const waitingClients = pools.reduce((s, p) => s + p.cl_waiting, 0);
+    const avgCacheHit =
+      databases.length > 0
+        ? Number((databases.reduce((s, d) => s + d.cache_hit_ratio, 0) / databases.length).toFixed(2))
+        : 100;
+    const advisories = computeScaleAdvisories({
+      ramPct: vps.ramPct,
+      diskPct: vps.diskPct,
+      activeBackends,
+      waitingClients,
+      avgCacheHit,
+      totalDbBytes,
+    });
+    return { vps, databases, pools, advisories };
   })
+  .get(
+    "/history",
+    ({ query }) => {
+      const range = query.range === "7d" ? "7d" : "24h";
+      return { range, samples: getMetricsHistory(range) };
+    },
+    {
+      query: t.Object({
+        range: t.Optional(t.Union([t.Literal("24h"), t.Literal("7d")])),
+      }),
+    }
+  )
   .get(
     "/connections",
     async ({ query }) => {

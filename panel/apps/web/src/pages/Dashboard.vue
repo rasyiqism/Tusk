@@ -28,10 +28,45 @@ interface OverviewData {
     sv_active: number;
     sv_idle: number;
   }>;
+  advisories?: Array<{
+    level: "info" | "warn";
+    code: string;
+    message: string;
+  }>;
+}
+
+interface MetricSample {
+  id: number;
+  sampled_at: string;
+  ram_pct: number;
+  disk_pct: number;
+  load_1m: number;
+  total_db_bytes: number;
+  active_backends: number;
+  waiting_clients: number;
+  avg_cache_hit: number;
 }
 
 const data = ref<OverviewData | null>(null);
+const history = ref<MetricSample[]>([]);
+const historyRange = ref<"24h" | "7d">("24h");
 const loading = ref(true);
+
+function sparklinePoints(values: number[], maxVal = 100): string {
+  if (values.length === 0) return "";
+  if (values.length === 1) {
+    const y = 26 - Math.min(1, Math.max(0, values[0] / Math.max(1, maxVal))) * 22;
+    return `0,${y.toFixed(1)} 120,${y.toFixed(1)}`;
+  }
+  const ceil = Math.max(1, maxVal, ...values);
+  return values
+    .map((v, i) => {
+      const x = (i / (values.length - 1)) * 120;
+      const y = 26 - (Math.max(0, v) / ceil) * 22;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+}
 
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -53,11 +88,25 @@ function barColor(pct: number) {
 
 async function load() {
   loading.value = true;
-  const res = await api.api.monitor.overview.get();
-  if (res.data) {
-    data.value = res.data as OverviewData;
+  const [ovRes, hRes] = await Promise.all([
+    api.api.monitor.overview.get(),
+    api.api.monitor.history.get({ query: { range: historyRange.value } }),
+  ]);
+  if (ovRes.data) {
+    data.value = ovRes.data as OverviewData;
+  }
+  if (hRes.data && "samples" in hRes.data && Array.isArray(hRes.data.samples)) {
+    history.value = hRes.data.samples as MetricSample[];
   }
   loading.value = false;
+}
+
+async function setRange(r: "24h" | "7d") {
+  historyRange.value = r;
+  const hRes = await api.api.monitor.history.get({ query: { range: r } });
+  if (hRes.data && "samples" in hRes.data && Array.isArray(hRes.data.samples)) {
+    history.value = hRes.data.samples as MetricSample[];
+  }
 }
 
 onMounted(load);
@@ -133,6 +182,72 @@ onMounted(load);
           </div>
           <div class="text-xs text-neutral-400 font-mono">
             {{ data.databases.length }} DB &middot; {{ data.pools.length }} Pool
+          </div>
+        </div>
+      </div>
+
+      <!-- Capacity Advisories -->
+      <div v-if="data.advisories && data.advisories.length > 0" class="bg-amber-950/20 px-4 py-3 sm:px-6 space-y-1.5">
+        <div
+          v-for="adv in data.advisories"
+          :key="adv.code"
+          class="flex items-start gap-2 text-xs text-amber-300"
+        >
+          <AppIcon name="warning" size="xs" class="mt-0.5 text-amber-400" />
+          <span>{{ adv.message }}</span>
+        </div>
+      </div>
+
+      <!-- Lightweight Time-Series Sparklines -->
+      <div v-if="history.length > 0" class="px-4 py-3 sm:px-6">
+        <div class="mb-2.5 flex items-center justify-between">
+          <span class="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
+            Tren Resource ({{ history.length }} sampel)
+          </span>
+          <div class="inline-flex rounded-lg border border-neutral-800 bg-neutral-900 p-0.5 text-[11px]">
+            <button
+              @click="setRange('24h')"
+              :class="historyRange === '24h' ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-400'"
+              class="rounded-md px-2 py-0.5 font-mono transition"
+            >
+              24h
+            </button>
+            <button
+              @click="setRange('7d')"
+              :class="historyRange === '7d' ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-400'"
+              class="rounded-md px-2 py-0.5 font-mono transition"
+            >
+              7d
+            </button>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div class="rounded-lg border border-neutral-800/80 bg-neutral-950/60 p-3">
+            <div class="mb-1 flex items-center justify-between text-[11px] text-neutral-400">
+              <span>Tren RAM</span>
+              <span class="font-mono text-emerald-400">{{ history[history.length - 1]?.ram_pct }}%</span>
+            </div>
+            <svg viewBox="0 0 120 28" class="h-7 w-full text-emerald-400" fill="none">
+              <polyline :points="sparklinePoints(history.map((s) => s.ram_pct), 100)" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </div>
+          <div class="rounded-lg border border-neutral-800/80 bg-neutral-950/60 p-3">
+            <div class="mb-1 flex items-center justify-between text-[11px] text-neutral-400">
+              <span>Tren Disk</span>
+              <span class="font-mono text-indigo-400">{{ history[history.length - 1]?.disk_pct }}%</span>
+            </div>
+            <svg viewBox="0 0 120 28" class="h-7 w-full text-indigo-400" fill="none">
+              <polyline :points="sparklinePoints(history.map((s) => s.disk_pct), 100)" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </div>
+          <div class="rounded-lg border border-neutral-800/80 bg-neutral-950/60 p-3">
+            <div class="mb-1 flex items-center justify-between text-[11px] text-neutral-400">
+              <span>Koneksi Aktif PG</span>
+              <span class="font-mono text-amber-400">{{ history[history.length - 1]?.active_backends }}</span>
+            </div>
+            <svg viewBox="0 0 120 28" class="h-7 w-full text-amber-400" fill="none">
+              <polyline :points="sparklinePoints(history.map((s) => s.active_backends), 20)" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
           </div>
         </div>
       </div>

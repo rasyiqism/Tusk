@@ -1,6 +1,6 @@
 import postgres from "postgres";
 import type { InstanceRow } from "../db/schema";
-import { assertPgIdentifier } from "../lib/crypto";
+import { assertPgIdentifier, decryptSecret } from "../lib/crypto";
 import { getPanelSettings } from "./alert";
 
 export const PG_ADMIN_URL =
@@ -41,21 +41,34 @@ export function buildConnectionStrings(
   };
 }
 
+export interface RoleLimits {
+  connectionLimit?: number;
+  statementTimeoutSec?: number;
+}
+
+function normalizeRoleLimits(limits?: RoleLimits) {
+  const connectionLimit = Math.min(500, Math.max(1, Math.round(limits?.connectionLimit ?? 25)));
+  const statementTimeoutSec = Math.min(3600, Math.max(1, Math.round(limits?.statementTimeoutSec ?? 30)));
+  return { connectionLimit, statementTimeoutSec };
+}
+
 export async function createSharedDatabase(
   dbNameRaw: string,
   usernameRaw: string,
-  password: string
+  password: string,
+  limits?: RoleLimits
 ) {
   const dbName = assertPgIdentifier(dbNameRaw, "db_name");
   const username = assertPgIdentifier(usernameRaw, "db_username");
+  const { connectionLimit, statementTimeoutSec } = normalizeRoleLimits(limits);
 
-  // Create dedicated non-superuser role with anti-hang guardrails
+  // Create dedicated non-superuser role with anti-hang & noisy-neighbor guardrails
   await pgAdmin.unsafe(
-    `CREATE ROLE "${username}" WITH LOGIN PASSWORD '${password.replace(/'/g, "''")}' NOSUPERUSER NOCREATEDB NOCREATEROLE`
+    `CREATE ROLE "${username}" WITH LOGIN PASSWORD '${password.replace(/'/g, "''")}' CONNECTION LIMIT ${connectionLimit} NOSUPERUSER NOCREATEDB NOCREATEROLE`
   );
 
   try {
-    await pgAdmin.unsafe(`ALTER ROLE "${username}" SET statement_timeout = '30s'`);
+    await pgAdmin.unsafe(`ALTER ROLE "${username}" SET statement_timeout = '${statementTimeoutSec}s'`);
     await pgAdmin.unsafe(`ALTER ROLE "${username}" SET idle_in_transaction_session_timeout = '15s'`);
     await pgAdmin.unsafe(`ALTER ROLE "${username}" SET temp_file_limit = '500MB'`);
 
@@ -68,6 +81,13 @@ export async function createSharedDatabase(
     await pgAdmin.unsafe(`DROP ROLE IF EXISTS "${username}"`).catch(() => {});
     throw err;
   }
+}
+
+export async function updateRoleLimits(usernameRaw: string, limits: RoleLimits) {
+  const username = assertPgIdentifier(usernameRaw, "db_username");
+  const { connectionLimit, statementTimeoutSec } = normalizeRoleLimits(limits);
+  await pgAdmin.unsafe(`ALTER ROLE "${username}" CONNECTION LIMIT ${connectionLimit}`);
+  await pgAdmin.unsafe(`ALTER ROLE "${username}" SET statement_timeout = '${statementTimeoutSec}s'`);
 }
 
 export async function dropSharedDatabaseAndRole(dbNameRaw: string, usernameRaw: string) {
@@ -84,11 +104,71 @@ export async function dropSharedDatabaseAndRole(dbNameRaw: string, usernameRaw: 
   await pgAdmin.unsafe(`DROP ROLE IF EXISTS "${username}"`);
 }
 
-export function getInstanceAdminUrl(instance: InstanceRow): string {
+export function getLocalAdminUrl(instance: InstanceRow): string {
   const dbName = assertPgIdentifier(instance.db_name, "db_name");
   const url = new URL(PG_ADMIN_URL);
   url.pathname = `/${dbName}`;
   return url.toString();
+}
+
+export function getExternalAdminUrl(instance: InstanceRow): string | null {
+  const enc = instance.external_url_enc || instance.remote_admin_url_enc;
+  if (!enc) return null;
+  const raw = decryptSecret(enc);
+  const url = new URL(raw);
+  if (!url.pathname || url.pathname === "/") {
+    const dbName = assertPgIdentifier(instance.db_name, "db_name");
+    url.pathname = `/${dbName}`;
+  }
+  return url.toString();
+}
+
+export function isExternalPrimary(instance: InstanceRow): boolean {
+  return (
+    instance.primary_tier === "external" ||
+    Boolean(instance.remote_admin_url_enc && instance.primary_tier !== "local")
+  );
+}
+
+export function getInstanceAdminUrl(instance: InstanceRow): string {
+  if (isExternalPrimary(instance)) {
+    const ext = getExternalAdminUrl(instance);
+    if (ext) return ext;
+  }
+  return getLocalAdminUrl(instance);
+}
+
+export function getMaskedExternalTarget(instance: InstanceRow): string | null {
+  try {
+    const ext = getExternalAdminUrl(instance);
+    if (!ext) return null;
+    const url = new URL(ext);
+    return `${url.hostname}:${url.port || "5432"}${url.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+export function buildInstanceConnectionStrings(
+  instance: InstanceRow,
+  password: string
+): ConnectionStrings {
+  if (isExternalPrimary(instance)) {
+    const ext = getExternalAdminUrl(instance);
+    if (ext) {
+      const remoteUrl = new URL(ext);
+      const sslMode = remoteUrl.searchParams.get("sslmode") || "require";
+      remoteUrl.searchParams.set("sslmode", sslMode);
+      const direct = remoteUrl.toString();
+      return {
+        internal: direct,
+        transaction: direct,
+        session: direct,
+        direct,
+      };
+    }
+  }
+  return buildConnectionStrings(instance.db_name, instance.db_username, password);
 }
 
 export async function resetRolePassword(usernameRaw: string, newPassword: string) {

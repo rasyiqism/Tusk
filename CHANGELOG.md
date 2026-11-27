@@ -2,6 +2,23 @@
 
 All notable changes to **Tusk** are documented in this file.
 
+## [Unreleased]
+
+### Added
+* **Vertical Scale-Up Presets & Per-Role Guardrails:** Parameterized `PG_MAX_CONNECTIONS`, `PG_SHARED_BUFFERS`, `PG_EFFECTIVE_CACHE_SIZE`, `PG_WORK_MEM`, `PG_MAINTENANCE_WORK_MEM`, `PGB_MAX_CLIENT_CONN`, `PGB_DEFAULT_POOL_SIZE` (default `15`), and `PGB_RESERVE_POOL_SIZE` in `docker-compose.yml` & `.env.example`. Added per-instance `connection_limit` (`CONNECTION LIMIT`) and `statement_timeout_sec` enforcement (`PATCH /api/instances/:id/limits`).
+* **Lightweight Time-Series Metrics & Capacity Advisories:** Added SQLite migration `v2` (`scale_up_v2_3`) with `metrics_samples` sampled every 5 minutes (14-day retention), `GET /api/monitor/history`, inline SVG sparklines (`24h`/`7d`) on Dashboard, and automatic pool/cache/disk/RAM saturation advisories on `/api/monitor/overview`.
+* **Scale-Out Migration Wizard & Remote Management:** Added `POST /api/instances/:id/migrate/preflight`, streaming `pg_dump | pg_restore` migration (`POST /api/instances/:id/migrate` over SSE `jobStream.ts`), and **Promote to Remote** (`remote_admin_url_enc`) so Tusk can keep managing migrated external PostgreSQL nodes.
+* **Per-Instance `backup_cron` & Auto Zstd Compression:** Replaced hardcoded `0 2 * * *` backup dispatch with per-instance 5-field cron evaluation (`PATCH /api/instances/:id/schedule`), and automatic `pg_dump --compress=zstd:3` capability detection (fallback `--compress=6`).
+* **Bidirectional Primary & Layer 2 Standby:** Added SQLite migration `v3` (`bidirectional_layer2_v2_4`), `layer2.ts` service, `POST /api/instances/external` (companion local standby pre-provisioning), `PUT`/`DELETE /api/instances/:id/layer2`, `after_backup` automatic mirroring, and 1-click bidirectional `POST /api/instances/:id/layer2/switch` (Promote External ↔ Failback Tusk Local).
+* **Comprehensive Documentation:** Added [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/API.md](docs/API.md), and expanded [README.md](README.md) & [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+### Reliability & Redeploy Safety
+* **Graceful Shutdown & Container Stop Buffers:** Added `stop_grace_period` (`60s` postgres, `30s` pg-panel, `15s` pgbouncer), `pg-panel` Docker healthcheck, `SIGTERM`/`SIGINT` active-job draining (`beginShutdownAndDrain`), and clean SQLite WAL checkpoint/close (`checkpointAndCloseSqlite`).
+* **Zero-Data-Loss SQLite Migrations & Startup Reconciliation:** Added `schema_migrations`, `PRAGMA synchronous = FULL`, automatic transactional `VACUUM INTO *.pre-vN.bak` snapshots prior to schema migrations, and `reconcileInterruptedJobsOnStartup()` (marks interrupted `'running'` backups failed, prunes `*.tmp`, preserves valid backups, and unlocks `active_restore:*` locks left by mid-restore crashes).
+* **Key Mismatch & Retention Guards:** Enforced minimum `retention_days` (`MAX(1, retention_days)` and route validation `1..3650`) and graceful handling of `MASTER_KEY` decryption mismatches in `/api/instances/:id/connections`.
+
+---
+
 ## [v2.2.0] - 2026-11-27
 
 ### Added

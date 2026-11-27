@@ -9,6 +9,15 @@ const props = defineProps<{
   creds: {
     dbName: string;
     password: string;
+    primaryTier?: "local" | "external";
+    standby?: {
+      configured: boolean;
+      tier: "local" | "external";
+      target: string | null;
+      label: string | null;
+      lastSyncAt: string | null;
+      lastSyncStatus: string | null;
+    } | null;
     connectionStrings: { internal: string; transaction: string; session: string; direct: string };
   } | null;
 }>();
@@ -48,6 +57,24 @@ async function copyEnv() {
     @update:model-value="emit('update:modelValue', $event)"
   >
     <div v-if="creds" class="space-y-4">
+      <div
+        v-if="creds.primaryTier"
+        :class="
+          creds.primaryTier === 'external'
+            ? 'border-indigo-800/70 bg-indigo-950/30 text-indigo-200'
+            : 'border-emerald-800/60 bg-emerald-950/20 text-emerald-200'
+        "
+        class="rounded-xl border px-3 py-2 text-xs flex flex-wrap items-center justify-between gap-2"
+      >
+        <span class="font-semibold">
+          {{ creds.primaryTier === "external" ? "Primary Aktif: Eksternal Node" : "Primary Aktif: Tusk Lokal" }}
+        </span>
+        <span v-if="creds.standby?.configured" class="font-mono text-[11px] opacity-85">
+          Layer 2 ({{ creds.standby.tier === "local" ? "Tusk Lokal" : creds.standby.label || creds.standby.target }})
+          &middot; {{ creds.standby.lastSyncStatus || "siap" }}
+        </span>
+      </div>
+
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div class="flex flex-wrap gap-1.5 text-xs">
           <button

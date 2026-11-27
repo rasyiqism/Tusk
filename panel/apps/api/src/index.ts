@@ -4,20 +4,24 @@ import { cron } from "@elysiajs/cron";
 import { staticPlugin } from "@elysiajs/static";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { sqlite, type InstanceRow } from "./db/schema";
+import { checkpointAndCloseSqlite, sqlite, type InstanceRow } from "./db/schema";
 import { authRoutes } from "./routes/auth";
 import { instanceRoutes } from "./routes/instances";
 import { monitorRoutes } from "./routes/monitor";
 import { backupRoutes } from "./routes/backups";
 import { settingsRoutes } from "./routes/settings";
 import {
+  beginShutdownAndDrain,
   cleanupExpiredBackups,
+  cronMatchesNow,
   deleteBackupFilesByInstance,
+  reconcileInterruptedJobsOnStartup,
   runBackupForInstance,
 } from "./services/backup";
 import { getPanelSettings, getVpsHealth, sendAlert } from "./services/alert";
+import { sampleAndStoreMetrics } from "./services/metrics";
 import { runAutomatedRestoreTest } from "./services/restore-test";
-import { dropSharedDatabaseAndRole } from "./services/postgres";
+import { dropSharedDatabaseAndRole, isExternalPrimary, pgAdmin } from "./services/postgres";
 
 const publicDir = join(import.meta.dir, "..", "public");
 
@@ -58,6 +62,8 @@ const api = new Elysia({ prefix: "/api" })
   .use(backupRoutes)
   .use(settingsRoutes);
 
+const lastScheduledRunMinute = new Map<string, string>();
+
 export const app = new Elysia()
   .use(
     cors({
@@ -67,15 +73,31 @@ export const app = new Elysia()
   )
   .use(
     cron({
-      name: "daily-shared-backup",
-      pattern: "0 2 * * *",
+      name: "per-instance-backup-scheduler",
+      pattern: "* * * * *",
       async run() {
+        const now = new Date();
+        const minuteKey = now.toISOString().slice(0, 16);
         const instances = sqlite
           .prepare("SELECT * FROM instances WHERE status = 'active'")
           .all() as InstanceRow[];
         for (const inst of instances) {
+          if (!cronMatchesNow(inst.backup_cron || "0 2 * * *", now)) continue;
+          if (lastScheduledRunMinute.get(inst.id) === minuteKey) continue;
+          lastScheduledRunMinute.set(inst.id, minuteKey);
           await runBackupForInstance(inst, "scheduled");
         }
+      },
+    })
+  )
+  .use(
+    cron({
+      name: "metrics-sampler",
+      pattern: "*/5 * * * *",
+      async run() {
+        await sampleAndStoreMetrics().catch((err) => {
+          console.error("Failed to sample metrics:", err);
+        });
       },
     })
   )
@@ -129,7 +151,11 @@ export const app = new Elysia()
         for (const inst of expiredInstances) {
           try {
             await deleteBackupFilesByInstance(inst.id);
-            await dropSharedDatabaseAndRole(inst.db_name, inst.db_username);
+            if (!isExternalPrimary(inst)) {
+              await dropSharedDatabaseAndRole(inst.db_name, inst.db_username);
+            } else {
+              await dropSharedDatabaseAndRole(inst.db_name, inst.db_username).catch(() => {});
+            }
 
             const purgeTx = sqlite.transaction((instanceId: string) => {
               sqlite.prepare("DELETE FROM backups WHERE instance_id = ?").run(instanceId);
@@ -165,7 +191,27 @@ if (existsSync(publicDir)) {
 export type App = typeof app;
 
 if (import.meta.main) {
+  await reconcileInterruptedJobsOnStartup().catch((err) => {
+    console.error("Startup job reconciliation warning:", err);
+  });
+  void sampleAndStoreMetrics().catch(() => {});
+
   const port = Number(process.env.PORT || 3000);
   app.listen(port);
   console.log(`PG Control Panel API listening on http://localhost:${port}`);
+
+  let shutdownStarted = false;
+  const gracefulShutdown = async (signal: string) => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    console.log(`Received ${signal}; draining active jobs before exit...`);
+    await beginShutdownAndDrain(20_000).catch(() => {});
+    await app.stop().catch(() => {});
+    await pgAdmin.end({ timeout: 3 }).catch(() => {});
+    checkpointAndCloseSqlite();
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 }

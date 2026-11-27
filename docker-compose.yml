@@ -19,21 +19,32 @@ services:
       - "-c"
       - "log_min_duration_statement=500"
       - "-c"
-      - "max_connections=200"
+      - "max_connections=${PG_MAX_CONNECTIONS:-200}"
+      - "-c"
+      - "shared_buffers=${PG_SHARED_BUFFERS:-256MB}"
+      - "-c"
+      - "effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-768MB}"
+      - "-c"
+      - "work_mem=${PG_WORK_MEM:-4MB}"
+      - "-c"
+      - "maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-64MB}"
     volumes:
       - pg_shared_data:/var/lib/postgresql/data
       - ./scripts/init-auth-query.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
+    stop_grace_period: 60s
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 15s
     networks:
       - pg_internal
 
   pgbouncer:
     build: ./pgbouncer
     restart: unless-stopped
+    stop_grace_period: 15s
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,8 +57,9 @@ services:
       AUTH_USER: pgbouncer_auth
       AUTH_DBNAME: postgres
       AUTH_QUERY: "SELECT usename, passwd FROM pgbouncer.user_lookup($1)"
-      MAX_CLIENT_CONN: 2000
-      DEFAULT_POOL_SIZE: 25
+      MAX_CLIENT_CONN: ${PGB_MAX_CLIENT_CONN:-2000}
+      DEFAULT_POOL_SIZE: ${PGB_DEFAULT_POOL_SIZE:-15}
+      RESERVE_POOL_SIZE: ${PGB_RESERVE_POOL_SIZE:-5}
       MAX_PREPARED_STATEMENTS: 200
       ADMIN_USERS: postgres
       CLIENT_TLS_SSLMODE: ${PGB_TLS_MODE:-allow}
@@ -83,11 +95,18 @@ services:
     image: ${PANEL_IMAGE:-tusk-pg-panel:local}
     build: ./panel
     restart: unless-stopped
+    stop_grace_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
       pgbouncer:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     expose:
       - "3000"
     ports:
@@ -116,6 +135,7 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
       SMTP_TO: ${SMTP_TO:-}
       PUBLIC_DB_HOST: ${PUBLIC_DB_HOST:-localhost}
+      PG_MAX_CONNECTIONS: ${PG_MAX_CONNECTIONS:-200}
       DATA_DIR: /app/data
     volumes:
       - panel_sqlite:/app/data

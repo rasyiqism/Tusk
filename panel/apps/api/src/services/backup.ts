@@ -1,14 +1,140 @@
 import { S3Client } from "bun";
-import { mkdirSync, statSync } from "node:fs";
+import type { Database } from "bun:sqlite";
+import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { sqlite, type BackupRow, type InstanceRow, logAudit } from "../db/schema";
 import { sendAlert } from "./alert";
 import { assertPgIdentifier } from "../lib/crypto";
+import { emitJobLog, finishJobLog, initJobLog, subscribeJobLog } from "../lib/jobStream";
+import { syncInstanceLayer2 } from "./layer2";
 import { getInstanceAdminUrl, pauseSharedDatabase, resumeSharedDatabase } from "./postgres";
 
 const BACKUP_ENCRYPTION_KEY = process.env.BACKUP_ENCRYPTION_KEY || "";
 const LOCAL_BACKUP_DIR = join(process.env.DATA_DIR || "./data", "backups");
 mkdirSync(LOCAL_BACKUP_DIR, { recursive: true });
+
+let shuttingDown = false;
+const activeJobs = new Set<Promise<unknown>>();
+
+function trackActiveJob<T>(promise: Promise<T>): Promise<T> {
+  activeJobs.add(promise);
+  void promise.finally(() => {
+    activeJobs.delete(promise);
+  });
+  return promise;
+}
+
+function assertNotShuttingDown() {
+  if (shuttingDown) {
+    throw new Error("Panel is shutting down for restart/redeploy; retry shortly.");
+  }
+}
+
+/**
+ * Prevents new backup/restore jobs from starting and waits up to timeoutMs
+ * for active pg_dump/pg_restore child processes to finish before exit.
+ */
+export async function beginShutdownAndDrain(timeoutMs = 20_000): Promise<{ drained: boolean }> {
+  shuttingDown = true;
+  if (activeJobs.size === 0) return { drained: true };
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+  });
+
+  const result = await Promise.race([
+    Promise.allSettled(Array.from(activeJobs)).then(() => "drained" as const),
+    timeoutPromise,
+  ]);
+  if (timer) clearTimeout(timer);
+  return { drained: result === "drained" };
+}
+
+/**
+ * Reconciles interrupted backup/restore state left by a forced kill or crash
+ * during redeploy: marks dangling 'running' backups as failed, cleans .tmp files
+ * without touching valid backup archives, and unlocks any DB stuck mid-restore.
+ */
+export async function reconcileInterruptedJobsOnStartup(options?: {
+  db?: Database;
+  backupDir?: string;
+  resumeFn?: (dbName: string, username: string) => Promise<void>;
+}): Promise<{
+  failedBackups: number;
+  removedTempFiles: number;
+  resumedRestores: number;
+}> {
+  const db = options?.db ?? sqlite;
+  const backupDir = options?.backupDir ?? LOCAL_BACKUP_DIR;
+  const resumeFn = options?.resumeFn ?? resumeSharedDatabase;
+
+  const danglingBackups = db
+    .prepare("SELECT id, encryption_algo FROM backups WHERE status = 'running'")
+    .all() as Array<{ id: string; encryption_algo: string }>;
+
+  let failedBackups = 0;
+  let removedTempFiles = 0;
+
+  if (danglingBackups.length > 0) {
+    const failStmt = db.prepare(
+      `UPDATE backups
+       SET status = 'failed', error_message = COALESCE(error_message, 'Interrupted by container restart or redeploy')
+       WHERE id = ? AND status = 'running'`
+    );
+    for (const row of danglingBackups) {
+      const res = failStmt.run(row.id);
+      if (res.changes > 0) failedBackups++;
+      const ext = row.encryption_algo !== "none" ? "dump.enc" : "dump";
+      const partialPath = join(backupDir, `${row.id}.${ext}`);
+      try {
+        rmSync(partialPath, { force: true });
+      } catch {
+        // ignore cleanup failure
+      }
+    }
+  }
+
+  try {
+    for (const entry of readdirSync(backupDir)) {
+      if (/^(restore|dl|verify)-.+\.tmp$/.test(entry)) {
+        rmSync(join(backupDir, entry), { force: true });
+        removedTempFiles++;
+      }
+    }
+  } catch {
+    // ignore if directory missing
+  }
+
+  const restoreLocks = db
+    .prepare("SELECT key, value_json FROM settings WHERE key LIKE 'active_restore:%'")
+    .all() as Array<{ key: string; value_json: string }>;
+
+  let resumedRestores = 0;
+  for (const lock of restoreLocks) {
+    const instanceId = lock.key.slice("active_restore:".length);
+    const inst = db
+      .prepare("SELECT * FROM instances WHERE id = ?")
+      .get(instanceId) as InstanceRow | undefined;
+
+    if (inst && inst.status === "active") {
+      try {
+        await resumeFn(inst.db_name, inst.db_username);
+        resumedRestores++;
+        db.prepare(
+          `INSERT INTO audit_events (instance_id, actor, ip_address, action, detail_json)
+           VALUES (?, 'system', NULL, 'restore_interrupted_recovery', ?)`
+        ).run(inst.id, JSON.stringify({ db_name: inst.db_name, reason: "startup_reconcile" }));
+      } catch (err) {
+        console.error(`Failed to auto-resume instance ${inst.id} after interrupted restore:`, err);
+        continue;
+      }
+    }
+    db.prepare("DELETE FROM settings WHERE key = ?").run(lock.key);
+  }
+
+  return { failedBackups, removedTempFiles, resumedRestores };
+}
 
 export function getS3Client(): S3Client | null {
   const endpoint = process.env.S3_ENDPOINT;
@@ -51,65 +177,91 @@ export async function streamToFile(
   }
 }
 
-export type JobLogEvent = { line?: string; done?: boolean };
+export { subscribeJobLog as subscribeBackupJob, type JobLogEvent } from "../lib/jobStream";
 
-interface JobState {
-  logs: string[];
-  done: boolean;
-  subscribers: Set<(ev: JobLogEvent) => void>;
-}
+function parseCronField(field: string, value: number, min: number, max: number): boolean {
+  for (const rawPart of field.split(",")) {
+    const part = rawPart.trim();
+    if (!part) return false;
+    const [rangePart, stepStr] = part.split("/");
+    const step = stepStr ? Number(stepStr) : 1;
+    if (!Number.isInteger(step) || step <= 0) return false;
 
-const jobStates = new Map<string, JobState>();
+    if (rangePart === "*") {
+      if ((value - min) % step === 0) return true;
+      continue;
+    }
 
-function initJobState(jobId: string) {
-  jobStates.set(jobId, { logs: [], done: false, subscribers: new Set() });
-}
+    if (rangePart.includes("-")) {
+      const [startStr, endStr] = rangePart.split("-");
+      const start = Number(startStr);
+      const end = Number(endStr);
+      if (!Number.isInteger(start) || !Number.isInteger(end) || start > end) return false;
+      if (start < min || end > max) return false;
+      if (value >= start && value <= end && (value - start) % step === 0) return true;
+      continue;
+    }
 
-export function subscribeBackupJob(jobId: string, cb: (ev: JobLogEvent) => void): () => void {
-  const state = jobStates.get(jobId);
-  if (!state) {
-    cb({ line: `[${new Date().toISOString()}] Job not found or already expired.`, done: true });
-    return () => {};
+    const num = Number(rangePart);
+    if (!Number.isInteger(num) || num < min || num > max) return false;
+    if (value === num) return true;
   }
-
-  for (const line of state.logs) {
-    cb({ line });
-  }
-  if (state.done) {
-    cb({ done: true });
-    return () => {};
-  }
-
-  state.subscribers.add(cb);
-  return () => {
-    state.subscribers.delete(cb);
-  };
+  return false;
 }
 
-function emitJobLog(jobId: string, message: string) {
-  const line = `[${new Date().toISOString()}] ${message}`;
-  const state = jobStates.get(jobId);
-  if (!state) return;
-  state.logs.push(line);
-  state.subscribers.forEach((cb) => cb({ line }));
+export function isValidCronExpression(expr: string): boolean {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) return false;
+  const bounds: Array<[number, number]> = [
+    [0, 59],
+    [0, 23],
+    [1, 31],
+    [1, 12],
+    [0, 7],
+  ];
+  return parts.every((field, idx) => {
+    const [min, max] = bounds[idx]!;
+    for (let v = min; v <= max; v++) {
+      if (parseCronField(field, v, min, max)) return true;
+    }
+    return false;
+  });
 }
 
-function finishJobLog(jobId: string) {
-  const state = jobStates.get(jobId);
-  if (!state) return;
-  state.done = true;
-  state.subscribers.forEach((cb) => cb({ done: true }));
-  state.subscribers.clear();
-  // Retain recent job logs briefly for late SSE reconnects, then release memory
-  setTimeout(() => {
-    jobStates.delete(jobId);
-  }, 5 * 60 * 1000);
+export function cronMatchesNow(expr: string, now = new Date()): boolean {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) return false;
+  const dow = now.getDay();
+  const [minF, hourF, domF, monF, dowF] = parts as [string, string, string, string, string];
+  const dowMatch =
+    parseCronField(dowF, dow, 0, 7) || (dow === 0 && parseCronField(dowF, 7, 0, 7));
+  return (
+    parseCronField(minF, now.getMinutes(), 0, 59) &&
+    parseCronField(hourF, now.getHours(), 0, 23) &&
+    parseCronField(domF, now.getDate(), 1, 31) &&
+    parseCronField(monF, now.getMonth() + 1, 1, 12) &&
+    dowMatch
+  );
+}
+
+let cachedCompressFlag: string | null = null;
+
+async function getPgDumpCompressionFlag(): Promise<string> {
+  if (cachedCompressFlag) return cachedCompressFlag;
+  try {
+    const out = await Bun.$`pg_dump --help`.text();
+    cachedCompressFlag = out.includes("zstd") ? "--compress=zstd:3" : "--compress=6";
+  } catch {
+    cachedCompressFlag = "--compress=6";
+  }
+  return cachedCompressFlag;
 }
 
 export function startBackupJobAsync(
   instance: InstanceRow,
   type: BackupRow["type"] = "manual"
 ): string {
+  assertNotShuttingDown();
   const dbName = assertPgIdentifier(instance.db_name, "db_name");
   const backupId = crypto.randomUUID();
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -117,7 +269,7 @@ export function startBackupJobAsync(
   const ext = encrypted ? "dump.enc" : "dump";
   const storageKey = `${instance.name}/${timestamp}_${type}.${ext}`;
 
-  initJobState(backupId);
+  initJobLog(backupId);
 
   sqlite
     .prepare(
@@ -126,7 +278,7 @@ export function startBackupJobAsync(
     )
     .run(backupId, instance.id, type, storageKey, encrypted ? "aes-256-cbc" : "none");
 
-  void executeBackupJob(backupId, instance, dbName, type, storageKey, encrypted);
+  void trackActiveJob(executeBackupJob(backupId, instance, dbName, type, storageKey, encrypted));
   return backupId;
 }
 
@@ -134,6 +286,7 @@ export async function runBackupForInstance(
   instance: InstanceRow,
   type: BackupRow["type"] = "manual"
 ): Promise<BackupRow> {
+  assertNotShuttingDown();
   const dbName = assertPgIdentifier(instance.db_name, "db_name");
   const backupId = crypto.randomUUID();
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -141,7 +294,7 @@ export async function runBackupForInstance(
   const ext = encrypted ? "dump.enc" : "dump";
   const storageKey = `${instance.name}/${timestamp}_${type}.${ext}`;
 
-  initJobState(backupId);
+  initJobLog(backupId);
 
   sqlite
     .prepare(
@@ -150,7 +303,7 @@ export async function runBackupForInstance(
     )
     .run(backupId, instance.id, type, storageKey, encrypted ? "aes-256-cbc" : "none");
 
-  await executeBackupJob(backupId, instance, dbName, type, storageKey, encrypted);
+  await trackActiveJob(executeBackupJob(backupId, instance, dbName, type, storageKey, encrypted));
   return sqlite.prepare("SELECT * FROM backups WHERE id = ?").get(backupId) as BackupRow;
 }
 
@@ -165,13 +318,14 @@ async function executeBackupJob(
   const ext = encrypted ? "dump.enc" : "dump";
   const localFile = join(LOCAL_BACKUP_DIR, `${backupId}.${ext}`);
   const startMs = Date.now();
-  emitJobLog(backupId, `Starting ${type} backup for ${dbName}...`);
+  const compressFlag = await getPgDumpCompressionFlag();
+  emitJobLog(backupId, `Starting ${type} backup for ${dbName} (${compressFlag})...`);
 
   try {
     const dbUrl = getInstanceAdminUrl(instance);
 
     const dumpProc = Bun.spawn(
-      ["pg_dump", "--format=custom", "--compress=6", dbUrl],
+      ["pg_dump", "--format=custom", compressFlag, dbUrl],
       { stdout: "pipe", stderr: "pipe" }
     );
 
@@ -232,6 +386,24 @@ async function executeBackupJob(
 
     emitJobLog(backupId, `Backup completed in ${durationMs}ms.`);
     logAudit("backup", { backupId, type, sizeBytes, durationMs }, instance.id);
+
+    if (type === "scheduled" || type === "manual") {
+      const fresh = sqlite
+        .prepare("SELECT * FROM instances WHERE id = ?")
+        .get(instance.id) as InstanceRow | undefined;
+      if (
+        fresh &&
+        (fresh.external_url_enc || fresh.remote_admin_url_enc) &&
+        fresh.layer2_sync_mode === "after_backup"
+      ) {
+        emitJobLog(backupId, "Triggering background Layer 2 warm-standby mirror...");
+        void trackActiveJob(
+          syncInstanceLayer2(fresh).catch((err) => {
+            console.error(`Auto Layer 2 mirror warning for ${fresh.db_name}:`, err);
+          })
+        );
+      }
+    }
   } catch (err) {
     const durationMs = Date.now() - startMs;
     const msg = err instanceof Error ? err.message : String(err);
@@ -284,7 +456,7 @@ export async function cleanupExpiredBackups(): Promise<number> {
        JOIN instances i ON i.id = b.instance_id
        WHERE b.status = 'success'
          AND b.type IN ('scheduled', 'manual')
-         AND datetime(b.created_at) < datetime('now', '-' || i.retention_days || ' days')`
+         AND datetime(b.created_at) < datetime('now', '-' || MAX(1, i.retention_days) || ' days')`
     )
     .all() as BackupRow[];
 
@@ -308,99 +480,111 @@ export async function cleanupExpiredBackups(): Promise<number> {
 }
 
 export async function restoreBackupById(backupId: string): Promise<void> {
-  const backup = sqlite.prepare("SELECT * FROM backups WHERE id = ?").get(backupId) as
-    | BackupRow
-    | undefined;
-  if (!backup || backup.status !== "success") {
-    throw new Error("Backup not found or not in success state");
-  }
-  if (backup.encryption_algo !== "none" && !BACKUP_ENCRYPTION_KEY) {
-    throw new Error("BACKUP_ENCRYPTION_KEY is required to decrypt this backup");
-  }
-
-  const instance = sqlite
-    .prepare("SELECT * FROM instances WHERE id = ?")
-    .get(backup.instance_id) as InstanceRow | undefined;
-  if (!instance) {
-    throw new Error("Target instance not found");
-  }
-
-  // Safety net: take pre_restore snapshot first and verify it succeeded
-  const preRestore = await runBackupForInstance(instance, "pre_restore");
-  if (preRestore.status !== "success") {
-    throw new Error(
-      `Safety pre_restore snapshot failed (${preRestore.error_message || "unknown error"}); restore aborted`
-    );
-  }
-
-  const tempFile = join(LOCAL_BACKUP_DIR, `restore-${backup.id}.tmp`);
-  const s3 = getS3Client();
-
-  if (s3) {
-    await streamToFile(s3.file(backup.storage_key).stream(), tempFile);
-  } else {
-    const localEncrypted = join(
-      LOCAL_BACKUP_DIR,
-      `${backup.id}.${backup.encryption_algo !== "none" ? "dump.enc" : "dump"}`
-    );
-    await Bun.$`cp ${localEncrypted} ${tempFile}`.quiet();
-  }
-
-  const dbUrl = getInstanceAdminUrl(instance);
-  const targetRole = assertPgIdentifier(instance.db_username, "db_username");
-  const wasActive = instance.status === "active";
-
-  try {
-    // Terminate active connections before pg_restore --clean to avoid table lock hangs
-    if (wasActive) {
-      await pauseSharedDatabase(instance.db_name, instance.db_username);
+  assertNotShuttingDown();
+  return trackActiveJob((async () => {
+    const backup = sqlite.prepare("SELECT * FROM backups WHERE id = ?").get(backupId) as
+      | BackupRow
+      | undefined;
+    if (!backup || backup.status !== "success") {
+      throw new Error("Backup not found or not in success state");
+    }
+    if (backup.encryption_algo !== "none" && !BACKUP_ENCRYPTION_KEY) {
+      throw new Error("BACKUP_ENCRYPTION_KEY is required to decrypt this backup");
     }
 
-    if (backup.encryption_algo !== "none") {
-      const decProc = Bun.spawn(
-        [
-          "openssl",
-          "enc",
-          "-d",
-          "-aes-256-cbc",
-          "-pbkdf2",
-          "-pass",
-          "env:BACKUP_PASS",
-          "-in",
-          tempFile,
-        ],
-        {
-          stdout: "pipe",
-          stderr: "pipe",
-          env: { ...process.env, BACKUP_PASS: BACKUP_ENCRYPTION_KEY },
-        }
-      );
+    const instance = sqlite
+      .prepare("SELECT * FROM instances WHERE id = ?")
+      .get(backup.instance_id) as InstanceRow | undefined;
+    if (!instance) {
+      throw new Error("Target instance not found");
+    }
 
-      const restoreProc = Bun.spawn(
-        ["pg_restore", "--clean", "--if-exists", "--no-owner", `--role=${targetRole}`, "-d", dbUrl],
-        { stdin: decProc.stdout, stderr: "pipe" }
+    // Safety net: take pre_restore snapshot first and verify it succeeded
+    const preRestore = await runBackupForInstance(instance, "pre_restore");
+    if (preRestore.status !== "success") {
+      throw new Error(
+        `Safety pre_restore snapshot failed (${preRestore.error_message || "unknown error"}); restore aborted`
       );
+    }
 
-      const [decExit, resExit] = await Promise.all([decProc.exited, restoreProc.exited]);
-      if (decExit !== 0) throw new Error(await new Response(decProc.stderr).text());
-      if (resExit !== 0) throw new Error(await new Response(restoreProc.stderr).text());
+    const tempFile = join(LOCAL_BACKUP_DIR, `restore-${backup.id}.tmp`);
+    const s3 = getS3Client();
+
+    if (s3) {
+      await streamToFile(s3.file(backup.storage_key).stream(), tempFile);
     } else {
-      const restoreProc = Bun.spawn(
-        ["pg_restore", "--clean", "--if-exists", "--no-owner", `--role=${targetRole}`, "-d", dbUrl, tempFile],
-        { stderr: "pipe" }
+      const localEncrypted = join(
+        LOCAL_BACKUP_DIR,
+        `${backup.id}.${backup.encryption_algo !== "none" ? "dump.enc" : "dump"}`
       );
-      if ((await restoreProc.exited) !== 0) {
-        throw new Error(await new Response(restoreProc.stderr).text());
-      }
+      await Bun.$`cp ${localEncrypted} ${tempFile}`.quiet();
     }
 
-    logAudit("restore", { backupId, storageKey: backup.storage_key }, instance.id);
-  } finally {
-    if (wasActive) {
-      await resumeSharedDatabase(instance.db_name, instance.db_username).catch(() => {});
+    const dbUrl = getInstanceAdminUrl(instance);
+    const targetRole = assertPgIdentifier(instance.db_username, "db_username");
+    const wasActive = instance.status === "active";
+    const lockKey = `active_restore:${instance.id}`;
+
+    try {
+      // Mark restore lock before disconnecting clients so startup reconcile can
+      // auto-resume the role if container crashes or redeploys mid-restore.
+      if (wasActive) {
+        sqlite
+          .prepare(
+            `INSERT OR REPLACE INTO settings (key, value_json, updated_at)
+             VALUES (?, ?, datetime('now'))`
+          )
+          .run(lockKey, JSON.stringify({ backupId, startedAt: new Date().toISOString() }));
+        await pauseSharedDatabase(instance.db_name, instance.db_username);
+      }
+
+      if (backup.encryption_algo !== "none") {
+        const decProc = Bun.spawn(
+          [
+            "openssl",
+            "enc",
+            "-d",
+            "-aes-256-cbc",
+            "-pbkdf2",
+            "-pass",
+            "env:BACKUP_PASS",
+            "-in",
+            tempFile,
+          ],
+          {
+            stdout: "pipe",
+            stderr: "pipe",
+            env: { ...process.env, BACKUP_PASS: BACKUP_ENCRYPTION_KEY },
+          }
+        );
+
+        const restoreProc = Bun.spawn(
+          ["pg_restore", "--clean", "--if-exists", "--no-owner", `--role=${targetRole}`, "-d", dbUrl],
+          { stdin: decProc.stdout, stderr: "pipe" }
+        );
+
+        const [decExit, resExit] = await Promise.all([decProc.exited, restoreProc.exited]);
+        if (decExit !== 0) throw new Error(await new Response(decProc.stderr).text());
+        if (resExit !== 0) throw new Error(await new Response(restoreProc.stderr).text());
+      } else {
+        const restoreProc = Bun.spawn(
+          ["pg_restore", "--clean", "--if-exists", "--no-owner", `--role=${targetRole}`, "-d", dbUrl, tempFile],
+          { stderr: "pipe" }
+        );
+        if ((await restoreProc.exited) !== 0) {
+          throw new Error(await new Response(restoreProc.stderr).text());
+        }
+      }
+
+      logAudit("restore", { backupId, storageKey: backup.storage_key }, instance.id);
+    } finally {
+      if (wasActive) {
+        await resumeSharedDatabase(instance.db_name, instance.db_username).catch(() => {});
+        sqlite.prepare("DELETE FROM settings WHERE key = ?").run(lockKey);
+      }
+      await Bun.$`rm -f ${tempFile}`.quiet().catch(() => {});
     }
-    await Bun.$`rm -f ${tempFile}`.quiet().catch(() => {});
-  }
+  })());
 }
 
 export async function getBackupDownloadResponse(backupId: string): Promise<Response> {
