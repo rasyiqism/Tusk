@@ -16,11 +16,27 @@ function rewriteIncludedRepoLink(href: string): string {
 
 export default withMermaid({
   title: "Tusk",
-  description: "Lightweight, zero-bloat self-hosted PostgreSQL Control Panel",
+  description: "Self-hosted PostgreSQL Control Panel — Bun, PgBouncer, S3 Backups, and Bidirectional Layer 2",
   base: "/Tusk/",
-  appearance: "dark",
+  appearance: false,
   cleanUrls: true,
   lastUpdated: true,
+  mermaid: {
+    theme: "base",
+    themeVariables: {
+      fontFamily: "'Plus Jakarta Sans', sans-serif",
+      primaryColor: "#ffffff",
+      primaryTextColor: "#18181b",
+      primaryBorderColor: "#d4d4d8",
+      lineColor: "#52525b",
+      secondaryColor: "#fafafa",
+      tertiaryColor: "#ecfdf5",
+      edgeLabelBackground: "#ffffff",
+    },
+  },
+  head: [
+    ["link", { rel: "icon", type: "image/svg+xml", href: "/Tusk/logo.svg" }],
+  ],
 
   markdown: {
     config: (md) => {
@@ -41,6 +57,7 @@ export default withMermaid({
 
   themeConfig: {
     siteTitle: "Tusk",
+    logo: "/logo.svg",
     nav: [
       { text: "Home", link: "/" },
       { text: "Deployment", link: "/DEPLOYMENT" },

@@ -1064,6 +1064,20 @@
       <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" />
     </g>
 
+    <!-- Stop / Terminate -->
+    <g v-else-if="name === 'stop'">
+      <rect x="6" y="6" width="12" height="12" rx="2" :fill="duotone ? 'currentColor' : 'none'" :fill-opacity="duotone ? '0.2' : '0'" />
+    </g>
+
+    <!-- Tusk Brand Mark: Twin tusks cradling database stack -->
+    <g v-else-if="name === 'tusk'">
+      <ellipse cx="12" cy="6.2" rx="4.2" ry="1.8" :fill="duotone ? 'currentColor' : 'none'" :fill-opacity="duotone ? '0.2' : '0'" />
+      <path d="M7.8 6.2v6.2c0 1 1.9 1.8 4.2 1.8s4.2-.8 4.2-1.8V6.2" />
+      <path d="M7.8 9.3c0 1 1.9 1.8 4.2 1.8s4.2-.8 4.2-1.8" opacity="0.7" />
+      <path d="M9.8 20.5C4.5 19.6 2.3 14.2 3.8 5.2C5.3 11.4 7.6 16.2 10.9 18.2C10.7 19.2 10.3 20 9.8 20.5Z" fill="currentColor" stroke="none" />
+      <path d="M14.2 20.5C19.5 19.6 21.7 14.2 20.2 5.2C18.7 11.4 16.4 16.2 13.1 18.2C13.3 19.2 13.7 20 14.2 20.5Z" fill="currentColor" stroke="none" />
+    </g>
+
     <!-- Default Fallback: Generic Dot -->
     <g v-else>
       <circle cx="12" cy="12" r="6" />

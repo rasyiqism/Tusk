@@ -1,6 +1,189 @@
+/* Rasyiqi Swiss Hairline Light System for VitePress */
 :root {
-  --vp-c-brand-1: #10b981;
-  --vp-c-brand-2: #059669;
-  --vp-c-brand-3: #34d399;
-  --vp-c-brand-soft: rgba(16, 185, 129, 0.14);
+  /* Layered Light Surfaces */
+  --vp-c-bg: #ffffff;
+  --vp-c-bg-alt: #fafafa;
+  --vp-c-bg-elv: #ffffff;
+  --vp-c-bg-soft: #fafafa;
+
+  /* Crisp 1px Hairline Dividers */
+  --vp-c-border: #e4e4e7;
+  --vp-c-divider: #e4e4e7;
+  --vp-c-gutter: #e4e4e7;
+
+  /* WCAG AA+ Neutral Typography */
+  --vp-c-text-1: #18181b;
+  --vp-c-text-2: #52525b;
+  --vp-c-text-3: #71717a;
+
+  /* Semantic Emerald Brand Accents (WCAG AA on white) */
+  --vp-c-brand-1: #047857;
+  --vp-c-brand-2: #065f46;
+  --vp-c-brand-3: #059669;
+  --vp-c-brand-soft: #ecfdf5;
+
+  /* Ink Primary & Crisp Secondary Buttons */
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-text: #ffffff;
+  --vp-button-brand-bg: #18181b;
+  --vp-button-brand-hover-border: transparent;
+  --vp-button-brand-hover-text: #ffffff;
+  --vp-button-brand-hover-bg: #27272a;
+  --vp-button-brand-active-border: transparent;
+  --vp-button-brand-active-text: #ffffff;
+  --vp-button-brand-active-bg: #09090b;
+
+  --vp-button-alt-border: #e4e4e7;
+  --vp-button-alt-text: #3f3f46;
+  --vp-button-alt-bg: #ffffff;
+  --vp-button-alt-hover-border: #d4d4d8;
+  --vp-button-alt-hover-text: #18181b;
+  --vp-button-alt-hover-bg: #f4f4f5;
+
+  /* Anti-Slop Hero: Solid Ink Title, Zero Neon Gradient Glow */
+  --vp-home-hero-name-color: #18181b;
+  --vp-home-hero-name-background: none;
+  --vp-home-hero-image-background-image: none;
+  --vp-home-hero-image-filter: none;
+
+  /* Typography & Code Wells */
+  --vp-font-family-base: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --vp-font-family-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --vp-code-block-bg: #fafafa;
+  --vp-code-tab-bg: #f4f4f5;
+  --vp-code-bg: #f4f4f5;
+  --vp-code-color: #065f46;
+}
+
+/* Header & Navigation Hairline */
+.VPNavBar {
+  border-bottom: 1px solid #e4e4e7 !important;
+  background-color: rgba(255, 255, 255, 0.92) !important;
+  backdrop-filter: blur(8px);
+}
+
+.VPNavBar .title {
+  font-weight: 800 !important;
+  letter-spacing: -0.025em !important;
+}
+
+/* Sidebar Hairline */
+.VPSidebar {
+  background-color: #fafafa !important;
+  border-right: 1px solid #e4e4e7 !important;
+}
+
+/* Crisp Tactile Buttons (max 8px radius, press scale) */
+.VPButton {
+  border-radius: 8px !important;
+  font-weight: 600 !important;
+  transition: transform 150ms ease, background-color 150ms ease, border-color 150ms ease !important;
+}
+
+.VPButton:hover {
+  transform: scale(1.02);
+}
+
+.VPButton:active {
+  transform: scale(0.98);
+}
+
+/* Hero Rhythm */
+.VPHero .name,
+.VPHero .text {
+  letter-spacing: -0.03em !important;
+}
+
+.VPHero .tagline {
+  color: #52525b !important;
+  font-size: 1.05rem !important;
+  line-height: 1.6 !important;
+}
+
+/* Swiss Grid Feature Cards (1px Hairline, No Heavy Shadows) */
+.VPFeatures .container {
+  max-width: 1080px !important;
+}
+
+.VPFeature {
+  border: 1px solid #e4e4e7 !important;
+  border-radius: 8px !important;
+  background-color: #ffffff !important;
+  box-shadow: none !important;
+  transition: border-color 150ms ease, transform 150ms ease !important;
+}
+
+.VPFeature:hover {
+  border-color: #d4d4d8 !important;
+}
+
+.VPFeature .title {
+  font-weight: 700 !important;
+  letter-spacing: -0.015em !important;
+  color: #18181b !important;
+}
+
+.VPFeature .details {
+  color: #52525b !important;
+  font-size: 0.875rem !important;
+  line-height: 1.55 !important;
+}
+
+/* Clean Code Blocks & Tables */
+.vp-doc div[class*="language-"] {
+  border: 1px solid #e4e4e7;
+  border-radius: 8px !important;
+  box-shadow: none !important;
+}
+
+.vp-doc table {
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.vp-doc th {
+  background-color: #fafafa !important;
+  color: #52525b !important;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.vp-doc th,
+.vp-doc td {
+  border-color: #e4e4e7 !important;
+}
+
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3 {
+  letter-spacing: -0.025em;
+}
+
+.vp-doc a {
+  text-underline-offset: 3px;
+}
+
+/* Home Body Container Width (1080px Standard) */
+.VPHome .vp-doc {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px 24px 48px;
+}
+
+@media (max-width: 640px) {
+  .VPHome .vp-doc {
+    padding: 16px 16px 32px;
+  }
+  .VPFeature {
+    border-radius: 0 !important;
+    border-left: none !important;
+    border-right: none !important;
+  }
+}
+
+/* Accessible Focus Ring */
+:where(a, button, input):focus-visible {
+  outline: 2px solid #059669 !important;
+  outline-offset: 2px;
 }

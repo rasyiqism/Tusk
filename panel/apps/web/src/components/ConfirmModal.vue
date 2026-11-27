@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import BottomSheet from "./BottomSheet.vue";
+
 defineProps<{
   open: boolean;
   title: string;
@@ -14,34 +16,37 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div
-    v-if="open"
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 backdrop-blur-xs"
+  <BottomSheet
+    :model-value="open"
+    :title="title"
+    @update:model-value="(val) => { if (!val) emit('cancel'); }"
   >
-    <div class="w-full max-w-md rounded-xl border border-zinc-800 bg-zinc-900 p-5 shadow-2xl space-y-4">
-      <div class="space-y-1">
-        <h3 class="text-base font-semibold text-zinc-100">{{ title }}</h3>
-        <p class="text-xs leading-relaxed text-zinc-400">{{ message }}</p>
-      </div>
-      <div class="flex justify-end gap-2 pt-1">
+    <p class="text-xs leading-relaxed text-neutral-600">
+      {{ message }}
+    </p>
+
+    <template #footer>
+      <div class="flex justify-end gap-2">
         <button
+          type="button"
           @click="emit('cancel')"
-          class="rounded-md bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-700"
+          class="min-h-[38px] rounded-lg border border-neutral-200 bg-white px-4 py-2 text-xs font-medium text-neutral-700 transition-all duration-150 hover:bg-neutral-100 active:scale-[0.98]"
         >
           Cancel
         </button>
         <button
+          type="button"
           @click="emit('confirm')"
           :class="
             danger
-              ? 'bg-red-600 hover:bg-red-500 text-white'
-              : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+              ? 'bg-rose-600 hover:bg-rose-700 text-white'
+              : 'bg-neutral-900 hover:bg-neutral-800 text-white'
           "
-          class="rounded-md px-3 py-1.5 text-xs font-medium"
+          class="min-h-[38px] rounded-lg px-4 py-2 text-xs font-semibold transition-all duration-150 active:scale-[0.98]"
         >
           {{ confirmLabel || "Confirm" }}
         </button>
       </div>
-    </div>
-  </div>
+    </template>
+  </BottomSheet>
 </template>

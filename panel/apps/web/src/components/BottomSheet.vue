@@ -81,7 +81,7 @@ onBeforeUnmount(() => {
       <div
         v-if="modelValue"
         @click="close"
-        class="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs transition-opacity"
+        class="fixed inset-0 z-50 bg-neutral-950/35 backdrop-blur-xs transition-opacity"
         aria-hidden="true"
       />
     </Transition>
@@ -101,7 +101,7 @@ onBeforeUnmount(() => {
         aria-modal="true"
         :aria-label="title || 'Sheet'"
         :class="[
-          'fixed bottom-0 inset-x-0 z-50 flex flex-col w-full bg-white dark:bg-neutral-900 border-t border-neutral-200 dark:border-neutral-800 rounded-t-2xl shadow-2xl overflow-hidden',
+          'fixed bottom-0 inset-x-0 z-50 flex flex-col w-full bg-white border-t border-neutral-200 rounded-t-2xl shadow-xl overflow-hidden',
           'sm:max-w-lg sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 sm:rounded-2xl sm:bottom-6 sm:border',
           maxHeight
         ]"
@@ -114,21 +114,21 @@ onBeforeUnmount(() => {
           @touchend="onTouchEnd"
           class="pt-3 pb-2 cursor-grab active:cursor-grabbing touch-none select-none flex flex-col items-center justify-center shrink-0"
         >
-          <div class="w-10 h-1.5 rounded-full bg-neutral-300 dark:bg-neutral-700" />
+          <div class="w-10 h-1.5 rounded-full bg-neutral-300" />
         </div>
 
         <!-- Sheet Header -->
-        <div v-if="title || $slots.header" class="flex items-center justify-between px-5 pb-3 border-b border-neutral-100 dark:border-neutral-800 shrink-0">
+        <div v-if="title || $slots.header" class="flex items-center justify-between px-5 pb-3 border-b border-neutral-200 shrink-0">
           <slot name="header">
-            <h2 class="text-base font-semibold text-neutral-900 dark:text-neutral-100 tracking-tight">
+            <h2 class="text-base font-semibold text-neutral-900 tracking-tight">
               {{ title }}
             </h2>
           </slot>
           <button
             type="button"
             @click="close"
-            class="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 active:scale-90 transition-all cursor-pointer"
-            aria-label="Tutup"
+            class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100 active:scale-90 transition-all cursor-pointer"
+            aria-label="Close"
           >
             <AppIcon name="x" size="md" />
           </button>
@@ -140,7 +140,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- Optional Footer / Action Bar (60% Thumb Zone) -->
-        <div v-if="$slots.footer" class="p-4 border-t border-neutral-100 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/60 shrink-0">
+        <div v-if="$slots.footer" class="p-4 border-t border-neutral-200 bg-neutral-50 shrink-0">
           <slot name="footer" />
         </div>
       </div>

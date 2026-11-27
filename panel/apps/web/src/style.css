@@ -122,6 +122,12 @@ body {
   padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom, 16px));
 }
 
+/* Accessible Keyboard Focus Ring */
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+}
+
 /* Custom Slim Scrollbars */
 * {
   scrollbar-width: thin;

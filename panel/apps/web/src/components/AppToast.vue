@@ -12,10 +12,10 @@ const typeIcons: Record<string, string> = {
 };
 
 const typeAccentClasses: Record<string, string> = {
-  success: 'border-l-4 border-l-emerald-500 text-emerald-400',
-  error: 'border-l-4 border-l-rose-500 text-rose-400',
-  warning: 'border-l-4 border-l-amber-500 text-amber-400',
-  info: 'border-l-4 border-l-indigo-500 text-indigo-400'
+  success: 'border-l-4 border-l-emerald-600 text-emerald-700',
+  error: 'border-l-4 border-l-rose-600 text-rose-700',
+  warning: 'border-l-4 border-l-amber-600 text-amber-700',
+  info: 'border-l-4 border-l-indigo-600 text-indigo-700'
 };
 </script>
 
@@ -36,7 +36,7 @@ const typeAccentClasses: Record<string, string> = {
       <div
         v-for="toast in toasts"
         :key="toast.id"
-        class="pointer-events-auto flex items-center justify-between gap-3 p-3.5 rounded-lg bg-neutral-900/95 dark:bg-neutral-900/95 text-neutral-100 shadow-xl border border-neutral-800 backdrop-blur-md transition-all duration-150 hover:border-neutral-700"
+        class="pointer-events-auto flex items-center justify-between gap-3 p-3.5 rounded-lg bg-white/95 text-neutral-900 shadow-lg border border-neutral-200 backdrop-blur-md transition-all duration-150 hover:border-neutral-300"
         :class="typeAccentClasses[toast.type]"
       >
         <div class="flex items-center gap-2.5 min-w-0 flex-1">
@@ -45,7 +45,7 @@ const typeAccentClasses: Record<string, string> = {
             size="md"
             class="shrink-0"
           />
-          <p class="text-xs font-medium leading-snug truncate">
+          <p class="text-xs font-medium leading-snug text-neutral-900 truncate">
             {{ toast.message }}
           </p>
         </div>
@@ -56,7 +56,7 @@ const typeAccentClasses: Record<string, string> = {
             v-if="toast.undo"
             type="button"
             @click="triggerUndo(toast.id)"
-            class="px-2.5 py-1 text-xs font-semibold rounded bg-neutral-800 hover:bg-neutral-700 active:scale-95 text-amber-300 hover:text-amber-200 border border-neutral-700 transition-all duration-100 cursor-pointer"
+            class="px-2.5 py-1 text-xs font-semibold rounded bg-neutral-100 hover:bg-neutral-200 active:scale-95 text-amber-700 border border-neutral-200 transition-all duration-100 cursor-pointer"
           >
             {{ toast.undo.label || 'Undo' }}
           </button>
@@ -65,8 +65,8 @@ const typeAccentClasses: Record<string, string> = {
           <button
             type="button"
             @click="dismiss(toast.id)"
-            class="p-1 rounded text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 active:scale-90 transition-all cursor-pointer"
-            aria-label="Tutup"
+            class="p-1 rounded text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100 active:scale-90 transition-all cursor-pointer"
+            aria-label="Close"
           >
             <AppIcon name="x" size="xs" />
           </button>

@@ -4,31 +4,34 @@ layout: home
 hero:
   name: "Tusk"
   text: "Self-Hosted PostgreSQL Control Panel"
-  tagline: "Run multiple isolated databases cleanly on one small VPS with Bun, SQLite WAL, and PgBouncer — scale vertically via env presets or fail over outward with Bidirectional Layer 2."
+  tagline: "Run isolated Postgres databases cleanly on one small VPS with PgBouncer, encrypted backups, and Bidirectional Layer 2."
+  image:
+    src: /logo.svg
+    alt: Tusk Logo
   actions:
     - theme: brand
-      text: Deploy & Scale Guide
+      text: Deploy
       link: /DEPLOYMENT
     - theme: alt
-      text: System Architecture
+      text: Architecture
       link: /ARCHITECTURE
     - theme: alt
-      text: API Reference
+      text: API
       link: /API
 
 features:
   - title: Isolated Shared Cluster
-    details: Dedicated non-superuser PostgreSQL 17 roles, per-role CONNECTION LIMIT, statement_timeout, idle-in-tx cutoffs, and REVOKE ALL FROM PUBLIC.
-  - title: Built-In PgBouncer Pooling
-    details: Transaction pooling with up to 2,000 concurrent client connections, max_prepared_statements=200, dynamic user_lookup auth, and auto-TLS.
-  - title: Redeploy Zero-Data-Loss
-    details: Forward-only SQLite migrations with automatic VACUUM INTO pre-migration snapshots, SIGTERM active job draining, and crash reconciliation.
-  - title: Streaming Encrypted Backups
-    details: Automated Zstd/custom pg_dump piped through OpenSSL AES-256-CBC directly to Cloudflare R2 / S3, plus pre-restore safety snapshots and TOC verification.
-  - title: Scale-Up & Bidirectional Layer 2
-    details: Env-driven vertical Postgres tuning, 24h/7d SQLite sparkline advisories, and 1-click Promote/Failback between Tusk Local and external Postgres nodes.
+    details: Dedicated non-superuser PostgreSQL 17 roles, per-role limits, statement timeouts, and REVOKE ALL FROM PUBLIC.
+  - title: Built-In PgBouncer
+    details: Transaction pooling for 2,000+ client connections with dynamic user_lookup auth and automatic TLS.
+  - title: Zero-Data-Loss Redeploy
+    details: Additive SQLite migrations with VACUUM INTO pre-migration snapshots, SIGTERM drain, and startup reconciliation.
+  - title: Streaming AES-256 Backups
+    details: Automated Zstd/custom pg_dump piped via OpenSSL directly to Cloudflare R2 / S3 with restore verification.
+  - title: Scale-Up & Layer 2 Failover
+    details: Env-based Postgres tuning, 24h/7d capacity advisories, and 1-click Promote/Failback to external nodes.
   - title: Unprivileged & Hardened
-    details: Zero /var/run/docker.sock mount, fail-closed Argon2id auth + TOTP 2FA, login rate limiting, logout revocation, CSRF Origin guards, and anti-SSRF.
+    details: Zero docker.sock mount, fail-closed Argon2id + TOTP 2FA, rate limits, CSRF guards, and anti-SSRF.
 ---
 
 ## Architecture Overview

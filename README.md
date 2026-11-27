@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="docs/public/logo.svg" alt="Tusk Logo" width="84" height="84" />
+</div>
+
 # Tusk — Self-Hosted PostgreSQL Control Panel
 
 [![CI](https://github.com/rasyiqism/Tusk/actions/workflows/ci.yml/badge.svg)](https://github.com/rasyiqism/Tusk/actions/workflows/ci.yml)

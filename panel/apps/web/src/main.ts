@@ -14,7 +14,7 @@ const router = createRouter({
   routes: [
     { path: "/", component: Dashboard, meta: { title: "Overview" } },
     { path: "/instances", component: Instances, meta: { title: "Databases" } },
-    { path: "/instances/:id/tables", component: Tables, meta: { title: "Tabel" } },
+    { path: "/instances/:id/tables", component: Tables, meta: { title: "Tables" } },
     { path: "/monitor", component: Monitor, meta: { title: "Monitor" } },
     { path: "/backups", component: Backups, meta: { title: "Backups" } },
     { path: "/settings", component: Settings, meta: { title: "Settings" } },
