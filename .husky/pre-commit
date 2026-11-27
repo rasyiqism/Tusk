@@ -1,2 +1,2 @@
-bash -n scripts/init-secrets.sh scripts/cold-dr.sh
+bash -n scripts/init-secrets.sh scripts/cold-dr.sh scripts/init-auth-query.sh
 cd panel && bun run typecheck

@@ -4,7 +4,8 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${PG_SUPERUSER_PASSWORD}
+      POSTGRES_PASSWORD: ${PG_SUPERUSER_PASSWORD:?Set PG_SUPERUSER_PASSWORD in Dokploy Environment or .env}
+      PGBOUNCER_AUTH_PASSWORD: ${PGBOUNCER_AUTH_PASSWORD:-pgbouncer_auth_default_change_me}
     command:
       - "postgres"
       - "-c"
@@ -21,7 +22,7 @@ services:
       - "max_connections=200"
     volumes:
       - pg_shared_data:/var/lib/postgresql/data
-      - ./init-auth-query.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./scripts/init-auth-query.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -49,15 +50,18 @@ services:
       DEFAULT_POOL_SIZE: 25
       MAX_PREPARED_STATEMENTS: 200
       ADMIN_USERS: postgres
-      CLIENT_TLS_SSLMODE: ${PGB_TLS_MODE:-allow}
-      CLIENT_TLS_CERT_FILE: /etc/pgbouncer/tls/server.crt
-      CLIENT_TLS_KEY_FILE: /etc/pgbouncer/tls/server.key
+      CLIENT_TLS_SSLMODE: ${PGB_TLS_MODE:-disable}
+      PG_SUPERUSER_PASSWORD: ${PG_SUPERUSER_PASSWORD:?Set PG_SUPERUSER_PASSWORD in Dokploy Environment or .env}
+      PGBOUNCER_AUTH_PASSWORD: ${PGBOUNCER_AUTH_PASSWORD:-pgbouncer_auth_default_change_me}
     ports:
       - "${PGB_BIND_IP:-127.0.0.1}:${PGB_PORT:-6432}:6432"
-    volumes:
-      - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
-      - ./pgbouncer/tls:/etc/pgbouncer/tls:ro
-    command: ["/bin/sh", "-c", "grep -q auth_dbname /etc/pgbouncer/pgbouncer.ini || echo 'auth_dbname = postgres' >> /etc/pgbouncer/pgbouncer.ini; exec /usr/bin/pgbouncer /etc/pgbouncer/pgbouncer.ini"]
+    command:
+      - "/bin/sh"
+      - "-c"
+      - |
+        printf '"pgbouncer_auth" "%s"\n"postgres" "%s"\n' "$${PGBOUNCER_AUTH_PASSWORD:-pgbouncer_auth_default_change_me}" "$$PG_SUPERUSER_PASSWORD" > /etc/pgbouncer/userlist.txt
+        grep -q auth_dbname /etc/pgbouncer/pgbouncer.ini || echo 'auth_dbname = postgres' >> /etc/pgbouncer/pgbouncer.ini
+        exec /usr/bin/pgbouncer /etc/pgbouncer/pgbouncer.ini
     networks:
       - pg_internal
 
@@ -73,18 +77,19 @@ services:
     ports:
       - "${PANEL_PORT:-3000}:3000"
     environment:
-      PG_ADMIN_URL: postgres://postgres:${PG_SUPERUSER_PASSWORD}@postgres:5432/postgres
+      PG_ADMIN_URL: postgres://postgres:${PG_SUPERUSER_PASSWORD:?Set PG_SUPERUSER_PASSWORD in Dokploy Environment or .env}@postgres:5432/postgres
       PGB_ADMIN_URL: postgres://postgres:${PG_SUPERUSER_PASSWORD}@pgbouncer:6432/pgbouncer
       PGB_TX_ADMIN_URL: postgres://postgres:${PG_SUPERUSER_PASSWORD}@pgbouncer:6432/pgbouncer
-      PANEL_ADMIN_PASSWORD_HASH: ${PANEL_ADMIN_PASSWORD_HASH}
+      PANEL_ADMIN_PASSWORD_HASH: ${PANEL_ADMIN_PASSWORD_HASH:-}
+      PANEL_ADMIN_PASSWORD_HASH_B64: ${PANEL_ADMIN_PASSWORD_HASH_B64:-}
       PANEL_TOTP_SECRET: ${PANEL_TOTP_SECRET:-}
-      MASTER_KEY: ${MASTER_KEY}
-      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY}
-      S3_ENDPOINT: ${S3_ENDPOINT}
-      S3_BUCKET: ${S3_BUCKET}
+      MASTER_KEY: ${MASTER_KEY:?Set MASTER_KEY (min 16 chars) in Dokploy Environment or .env}
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:-}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_BUCKET: ${S3_BUCKET:-}
       S3_REGION: ${S3_REGION:-us-east-1}
-      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
-      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
       NTFY_URL: ${NTFY_URL:-}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
       ALLOW_INTERNAL_URLS: ${ALLOW_INTERNAL_URLS:-true}

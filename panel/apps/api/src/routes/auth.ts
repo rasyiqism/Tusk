@@ -12,7 +12,17 @@ const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const loginAttempts = new Map<string, { failures: number; resetAt: number }>();
 
 function getAdminHash(): string {
-  return process.env.PANEL_ADMIN_PASSWORD_HASH || "";
+  if (process.env.PANEL_ADMIN_PASSWORD_HASH) {
+    return process.env.PANEL_ADMIN_PASSWORD_HASH;
+  }
+  if (process.env.PANEL_ADMIN_PASSWORD_HASH_B64) {
+    try {
+      return Buffer.from(process.env.PANEL_ADMIN_PASSWORD_HASH_B64, "base64").toString("utf8").trim();
+    } catch {
+      return "";
+    }
+  }
+  return "";
 }
 
 function getTotpSecret(): string {
