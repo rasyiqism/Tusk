@@ -1,7 +1,0 @@
-* [Overview](README.md)
-* [Deployment & Scaling](docs/DEPLOYMENT.md)
-* [Architecture & Internals](docs/ARCHITECTURE.md)
-* [HTTP & SSE API Reference](docs/API.md)
-* [Security Policy](SECURITY.md)
-* [Contributing](CONTRIBUTING.md)
-* [Changelog](CHANGELOG.md)

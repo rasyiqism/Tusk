@@ -3,6 +3,9 @@ pgbouncer/userlist.txt
 pgbouncer/tls/
 node_modules/
 panel/node_modules/
+docs/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
 panel/apps/web/dist/
 panel/apps/api/public/
 panel/apps/api/data/
