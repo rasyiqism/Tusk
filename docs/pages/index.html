@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify@4/lib/themes/dark.css" />
   <style>
     :root {
+      --theme-color: #10b981;
       --base-background-color: #09090b;
       --sidebar-background: #111114;
       --accent-color: #10b981;
@@ -17,34 +18,67 @@
       --muted-color: #a1a1aa;
     }
     html, body {
-      background-color: var(--base-background-color);
+      background-color: var(--base-background-color) !important;
       color: var(--text-color);
       font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
     .sidebar {
-      background-color: var(--sidebar-background);
-      border-right: 1px solid var(--border-color);
+      background-color: var(--sidebar-background) !important;
+      border-right: 1px solid var(--border-color) !important;
       color: var(--text-color);
+      padding-bottom: 64px;
+    }
+    .sidebar .app-name {
+      margin: 14px 0 10px;
     }
     .sidebar .app-name-link {
-      color: #ffffff;
+      color: #ffffff !important;
       font-weight: 700;
       letter-spacing: 0.02em;
     }
     .sidebar ul li a {
-      color: var(--muted-color);
+      color: var(--muted-color) !important;
       font-size: 14px;
     }
     .sidebar ul li.active > a,
     .sidebar ul li a:hover {
-      color: var(--accent-color);
-      border-right-color: var(--accent-color);
+      color: var(--accent-color) !important;
+      border-right-color: var(--accent-color) !important;
     }
-    .search input {
-      background: #18181b !important;
-      color: var(--text-color) !important;
+    .search {
+      border-bottom: 1px solid var(--border-color) !important;
+      margin-bottom: 10px !important;
+      padding: 12px !important;
+    }
+    .search .input-wrap {
       border: 1px solid var(--border-color) !important;
       border-radius: 8px;
+      background: #18181b;
+    }
+    .search input {
+      background: transparent !important;
+      color: var(--text-color) !important;
+      border: none !important;
+    }
+    .search .clear-button svg {
+      fill: var(--muted-color);
+    }
+    .sidebar-toggle {
+      background-color: rgba(17, 17, 20, 0.92) !important;
+      border: 1px solid var(--border-color) !important;
+      border-radius: 10px !important;
+      bottom: 14px !important;
+      left: 14px !important;
+      width: auto !important;
+      padding: 10px 12px !important;
+      backdrop-filter: blur(8px);
+    }
+    .sidebar-toggle span {
+      background-color: var(--accent-color) !important;
+    }
+    .github-corner svg {
+      fill: #18181b !important;
+      color: var(--accent-color) !important;
     }
     .markdown-section {
       max-width: 900px;
@@ -53,6 +87,7 @@
     .markdown-section h1,
     .markdown-section h2,
     .markdown-section h3,
+    .markdown-section h4,
     .markdown-section strong {
       color: #ffffff;
     }
@@ -60,8 +95,8 @@
       color: var(--accent-color);
     }
     .markdown-section code {
-      background-color: #18181b;
-      color: #6ee7b7;
+      background-color: #18181b !important;
+      color: #6ee7b7 !important;
       border-radius: 4px;
       padding: 2px 6px;
     }
@@ -72,16 +107,16 @@
     }
     .markdown-section pre > code {
       background-color: transparent !important;
-      color: #e4e4e7;
+      color: #e4e4e7 !important;
       padding: 0;
     }
     .markdown-section table th,
     .markdown-section table td {
-      border-color: var(--border-color);
+      border-color: var(--border-color) !important;
     }
     .markdown-section table tr {
       background-color: transparent !important;
-      border-top-color: var(--border-color);
+      border-top-color: var(--border-color) !important;
     }
     .markdown-section table tr:nth-child(2n) {
       background-color: #111114 !important;
@@ -93,6 +128,26 @@
       padding: 10px 16px;
       border-radius: 0 8px 8px 0;
     }
+    .tusk-callout {
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin: 16px 0;
+      border: 1px solid var(--border-color);
+      background: #111114;
+    }
+    .tusk-callout-note { border-left: 4px solid #38bdf8; }
+    .tusk-callout-tip { border-left: 4px solid #10b981; }
+    .tusk-callout-important { border-left: 4px solid #818cf8; }
+    .tusk-callout-warning { border-left: 4px solid #f59e0b; }
+    .tusk-callout-caution { border-left: 4px solid #f43f5e; }
+    .tusk-callout-title {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+      color: #ffffff;
+    }
     .mermaid {
       background: #111114;
       border: 1px solid var(--border-color);
@@ -101,6 +156,10 @@
       margin: 16px 0;
       text-align: center;
       overflow-x: auto;
+    }
+    .mermaid svg {
+      max-width: 100%;
+      height: auto;
     }
   </style>
 </head>
@@ -123,17 +182,37 @@
         depth: 4,
       },
       plugins: [
-        function renderMermaidDiagrams(hook) {
-          hook.afterEach(function (html) {
+        function tuskDocsEnhancer(hook) {
+          hook.afterEach(function (html, next) {
             var doc = new DOMParser().parseFromString(html, "text/html");
+
             doc.querySelectorAll('pre[data-lang="mermaid"]').forEach(function (pre) {
               var container = document.createElement("div");
               container.className = "mermaid";
               container.textContent = pre.textContent || "";
               pre.replaceWith(container);
             });
-            return doc.body.innerHTML;
+
+            doc.querySelectorAll("blockquote").forEach(function (bq) {
+              var firstP = bq.querySelector("p");
+              if (!firstP) return;
+              var m = firstP.innerHTML.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(?:<br\s*\/?>|\n)?([\s\S]*)$/i);
+              if (!m) return;
+              var kind = m[1].toLowerCase();
+              firstP.innerHTML = m[2];
+              var box = document.createElement("div");
+              box.className = "tusk-callout tusk-callout-" + kind;
+              var title = document.createElement("div");
+              title.className = "tusk-callout-title";
+              title.textContent = kind;
+              box.appendChild(title);
+              while (bq.firstChild) box.appendChild(bq.firstChild);
+              bq.replaceWith(box);
+            });
+
+            next(doc.body.innerHTML);
           });
+
           hook.doneEach(function () {
             if (window.mermaid) {
               window.mermaid.run({ querySelector: ".mermaid" }).catch(function () {});
