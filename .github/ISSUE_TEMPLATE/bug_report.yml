@@ -1,0 +1,29 @@
+name: Bug Report
+description: Report a reproducible bug in Tusk
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear description of what happened vs what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Steps or commands to reproduce the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Docker/Dokploy version, Tusk image tag or commit SHA.
+      placeholder: |
+        - Deployment: Dokploy / Docker Compose
+        - Tusk Version: v2.2.0
+    validations:
+      required: true

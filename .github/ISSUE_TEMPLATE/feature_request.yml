@@ -1,0 +1,19 @@
+name: Feature Request
+description: Suggest a lean, practical improvement for Tusk
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Use Case
+      description: What operational problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Keep Tusk's zero-bloat, single-operator philosophy in mind.
+    validations:
+      required: true

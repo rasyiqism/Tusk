@@ -73,7 +73,7 @@ async function createDb() {
         <label class="block text-xs font-semibold text-neutral-300">Nama Database</label>
         <input
           v-model="newName"
-          placeholder="kbm_printing_prod"
+          placeholder="my_app_prod"
           class="w-full rounded-xl border border-neutral-800 bg-neutral-950 px-3.5 py-2.5 font-mono text-sm text-neutral-100 focus:border-indigo-500 focus:outline-none"
         />
       </div>

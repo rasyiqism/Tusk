@@ -10,7 +10,7 @@ if [[ $# -lt 2 ]]; then
   echo "Usage:"
   echo "  $0 <local_dump_enc_file> <target_postgres_url>"
   echo "Example:"
-  echo "  BACKUP_ENCRYPTION_KEY=mysecret $0 ./data/backups/kbm_prod.dump.enc postgres://postgres:pass@localhost:5432/kbm_prod"
+  echo "  BACKUP_ENCRYPTION_KEY=mysecret $0 ./data/backups/my_app_prod.dump.enc postgres://postgres:pass@localhost:5432/my_app_prod"
   exit 1
 fi
 
