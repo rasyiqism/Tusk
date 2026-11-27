@@ -32,7 +32,7 @@ services:
       - pg_internal
 
   pgbouncer:
-    image: edoburu/pgbouncer:v1.23.1-p0
+    build: ./pgbouncer
     restart: unless-stopped
     depends_on:
       postgres:
@@ -50,15 +50,29 @@ services:
       DEFAULT_POOL_SIZE: 25
       MAX_PREPARED_STATEMENTS: 200
       ADMIN_USERS: postgres
-      CLIENT_TLS_SSLMODE: ${PGB_TLS_MODE:-disable}
+      CLIENT_TLS_SSLMODE: ${PGB_TLS_MODE:-allow}
+      CLIENT_TLS_CERT_FILE: /etc/pgbouncer/tls/server.crt
+      CLIENT_TLS_KEY_FILE: /etc/pgbouncer/tls/server.key
       PG_SUPERUSER_PASSWORD: ${PG_SUPERUSER_PASSWORD:?Set PG_SUPERUSER_PASSWORD in Dokploy Environment or .env}
       PGBOUNCER_AUTH_PASSWORD: ${PGBOUNCER_AUTH_PASSWORD:-pgbouncer_auth_default_change_me}
     ports:
-      - "${PGB_BIND_IP:-127.0.0.1}:${PGB_PORT:-6432}:6432"
+      - "${PGB_BIND_IP:-0.0.0.0}:${PGB_PORT:-6432}:6432"
+    volumes:
+      - pgbouncer_tls:/etc/pgbouncer/tls
     command:
       - "/bin/sh"
       - "-c"
       - |
+        mkdir -p /etc/pgbouncer/tls
+        if [ ! -f /etc/pgbouncer/tls/server.crt ] || [ ! -f /etc/pgbouncer/tls/server.key ]; then
+          openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+            -keyout /etc/pgbouncer/tls/server.key \
+            -out /etc/pgbouncer/tls/server.crt \
+            -subj "/CN=pgbouncer" \
+            -addext "subjectAltName=DNS:localhost,DNS:pgbouncer,IP:127.0.0.1" 2>/dev/null
+          chmod 600 /etc/pgbouncer/tls/server.key
+          chmod 644 /etc/pgbouncer/tls/server.crt
+        fi
         printf '"pgbouncer_auth" "%s"\n"postgres" "%s"\n' "$${PGBOUNCER_AUTH_PASSWORD:-pgbouncer_auth_default_change_me}" "$$PG_SUPERUSER_PASSWORD" > /etc/pgbouncer/userlist.txt
         grep -q auth_dbname /etc/pgbouncer/pgbouncer.ini || echo 'auth_dbname = postgres' >> /etc/pgbouncer/pgbouncer.ini
         exec /usr/bin/pgbouncer /etc/pgbouncer/pgbouncer.ini
@@ -110,6 +124,7 @@ services:
 
 volumes:
   pg_shared_data:
+  pgbouncer_tls:
   panel_sqlite:
 
 networks:
