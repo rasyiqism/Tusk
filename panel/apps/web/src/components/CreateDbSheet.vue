@@ -24,11 +24,7 @@ const emit = defineEmits<{
 const toast = useToast();
 const creating = ref(false);
 const newName = ref("");
-const newMode = ref<"shared" | "dedicated">("shared");
 const newEnv = ref<"prod" | "staging" | "dev">("prod");
-const newCpu = ref(1);
-const newRamMb = ref(512);
-const enableWalg = ref(false);
 const retentionDays = ref(14);
 const errorMsg = ref("");
 
@@ -47,11 +43,7 @@ async function createDb() {
   creating.value = true;
   const res = await api.api.instances.post({
     name: newName.value.trim(),
-    mode: newMode.value,
     env: newEnv.value,
-    cpu_limit: newMode.value === "dedicated" ? newCpu.value : undefined,
-    ram_limit_mb: newMode.value === "dedicated" ? newRamMb.value : undefined,
-    enable_walg: newMode.value === "dedicated" ? enableWalg.value : undefined,
     retention_days: retentionDays.value,
   });
   creating.value = false;
@@ -88,16 +80,6 @@ async function createDb() {
 
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-1.5">
-          <label class="block text-xs font-semibold text-neutral-300">Mode</label>
-          <select
-            v-model="newMode"
-            class="w-full rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2.5 text-sm text-neutral-100"
-          >
-            <option value="shared">Shared</option>
-            <option value="dedicated">Dedicated</option>
-          </select>
-        </div>
-        <div class="space-y-1.5">
           <label class="block text-xs font-semibold text-neutral-300">Environment</label>
           <select
             v-model="newEnv"
@@ -108,44 +90,16 @@ async function createDb() {
             <option value="dev">dev</option>
           </select>
         </div>
-      </div>
-
-      <div v-if="newMode === 'dedicated'" class="grid grid-cols-2 gap-3">
         <div class="space-y-1.5">
-          <label class="block text-xs font-semibold text-neutral-300">CPU (Core)</label>
+          <label class="block text-xs font-semibold text-neutral-300">Retensi Backup (Hari)</label>
           <input
-            v-model.number="newCpu"
+            v-model.number="retentionDays"
             type="number"
-            step="0.5"
-            min="0.5"
-            class="w-full rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2 font-mono text-sm text-neutral-100"
+            min="1"
+            max="365"
+            class="w-full rounded-xl border border-neutral-800 bg-neutral-950 px-3.5 py-2 font-mono text-sm text-neutral-100"
           />
         </div>
-        <div class="space-y-1.5">
-          <label class="block text-xs font-semibold text-neutral-300">RAM (MB)</label>
-          <input
-            v-model.number="newRamMb"
-            type="number"
-            step="128"
-            min="256"
-            class="w-full rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2 font-mono text-sm text-neutral-100"
-          />
-        </div>
-        <label class="col-span-2 flex items-center gap-2 text-xs text-neutral-300">
-          <input v-model="enableWalg" type="checkbox" class="rounded border-neutral-700" />
-          <span>Aktifkan WAL-G PITR</span>
-        </label>
-      </div>
-
-      <div class="space-y-1.5">
-        <label class="block text-xs font-semibold text-neutral-300">Retensi Backup (Hari)</label>
-        <input
-          v-model.number="retentionDays"
-          type="number"
-          min="1"
-          max="365"
-          class="w-full rounded-xl border border-neutral-800 bg-neutral-950 px-3.5 py-2 font-mono text-sm text-neutral-100"
-        />
       </div>
 
       <div v-if="errorMsg" class="text-xs text-rose-400">{{ errorMsg }}</div>

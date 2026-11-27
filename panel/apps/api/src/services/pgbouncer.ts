@@ -1,10 +1,9 @@
 import postgres from "postgres";
 
-const PGB_TX_ADMIN_URL = process.env.PGB_TX_ADMIN_URL;
-const PGB_SESS_ADMIN_URL = process.env.PGB_SESS_ADMIN_URL;
+const PGB_ADMIN_URL = process.env.PGB_ADMIN_URL || process.env.PGB_TX_ADMIN_URL;
 
 export interface PoolStatus {
-  pooler: "tx" | "session";
+  pooler: "transaction";
   database: string;
   user: string;
   cl_active: number;
@@ -14,9 +13,9 @@ export interface PoolStatus {
   maxwait: number;
 }
 
-async function queryPools(url: string | undefined, pooler: "tx" | "session"): Promise<PoolStatus[]> {
-  if (!url) return [];
-  const client = postgres(url, {
+export async function getAllPoolStats(): Promise<PoolStatus[]> {
+  if (!PGB_ADMIN_URL) return [];
+  const client = postgres(PGB_ADMIN_URL, {
     max: 1,
     connect_timeout: 2,
     idle_timeout: 5,
@@ -25,7 +24,7 @@ async function queryPools(url: string | undefined, pooler: "tx" | "session"): Pr
   try {
     const rows = await client.unsafe("SHOW POOLS").simple();
     return rows.map((r) => ({
-      pooler,
+      pooler: "transaction",
       database: String(r.database ?? ""),
       user: String(r.user ?? ""),
       cl_active: Number(r.cl_active ?? 0),
@@ -39,12 +38,4 @@ async function queryPools(url: string | undefined, pooler: "tx" | "session"): Pr
   } finally {
     await client.end({ timeout: 1 }).catch(() => {});
   }
-}
-
-export async function getAllPoolStats(): Promise<PoolStatus[]> {
-  const [tx, sess] = await Promise.all([
-    queryPools(PGB_TX_ADMIN_URL, "tx"),
-    queryPools(PGB_SESS_ADMIN_URL, "session"),
-  ]);
-  return [...tx, ...sess];
 }

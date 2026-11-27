@@ -4,13 +4,13 @@ import { join } from "node:path";
 import { sqlite, type BackupRow, type InstanceRow, logAudit } from "../db/schema";
 import { sendAlert } from "./alert";
 import { assertPgIdentifier } from "../lib/crypto";
-import { getInstanceAdminUrl } from "./postgres";
+import { getInstanceAdminUrl, pauseSharedDatabase, resumeSharedDatabase } from "./postgres";
 
 const BACKUP_ENCRYPTION_KEY = process.env.BACKUP_ENCRYPTION_KEY || "";
 const LOCAL_BACKUP_DIR = join(process.env.DATA_DIR || "./data", "backups");
 mkdirSync(LOCAL_BACKUP_DIR, { recursive: true });
 
-function getS3Client(): S3Client | null {
+export function getS3Client(): S3Client | null {
   const endpoint = process.env.S3_ENDPOINT;
   const bucket = process.env.S3_BUCKET;
   const accessKeyId = process.env.S3_ACCESS_KEY_ID;
@@ -26,25 +26,84 @@ function getS3Client(): S3Client | null {
   });
 }
 
-// In-memory SSE log subscribers per backup job
-const jobSubscribers = new Map<string, Set<(line: string) => void>>();
-
-export function subscribeBackupJob(jobId: string, cb: (line: string) => void) {
-  let set = jobSubscribers.get(jobId);
-  if (!set) {
-    set = new Set();
-    jobSubscribers.set(jobId, set);
+export async function streamToFile(
+  stream: ReadableStream<Uint8Array>,
+  destPath: string
+): Promise<void> {
+  const writer = Bun.file(destPath).writer();
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) writer.write(value);
+    }
+    await writer.end();
+  } catch (err) {
+    try {
+      await writer.end();
+    } catch {
+      // ignore close error
+    }
+    throw err;
+  } finally {
+    reader.releaseLock();
   }
-  set.add(cb);
+}
+
+export type JobLogEvent = { line?: string; done?: boolean };
+
+interface JobState {
+  logs: string[];
+  done: boolean;
+  subscribers: Set<(ev: JobLogEvent) => void>;
+}
+
+const jobStates = new Map<string, JobState>();
+
+function initJobState(jobId: string) {
+  jobStates.set(jobId, { logs: [], done: false, subscribers: new Set() });
+}
+
+export function subscribeBackupJob(jobId: string, cb: (ev: JobLogEvent) => void): () => void {
+  const state = jobStates.get(jobId);
+  if (!state) {
+    cb({ line: `[${new Date().toISOString()}] Job not found or already expired.`, done: true });
+    return () => {};
+  }
+
+  for (const line of state.logs) {
+    cb({ line });
+  }
+  if (state.done) {
+    cb({ done: true });
+    return () => {};
+  }
+
+  state.subscribers.add(cb);
   return () => {
-    set?.delete(cb);
-    if (set?.size === 0) jobSubscribers.delete(jobId);
+    state.subscribers.delete(cb);
   };
 }
 
 function emitJobLog(jobId: string, message: string) {
   const line = `[${new Date().toISOString()}] ${message}`;
-  jobSubscribers.get(jobId)?.forEach((cb) => cb(line));
+  const state = jobStates.get(jobId);
+  if (!state) return;
+  state.logs.push(line);
+  state.subscribers.forEach((cb) => cb({ line }));
+}
+
+function finishJobLog(jobId: string) {
+  const state = jobStates.get(jobId);
+  if (!state) return;
+  state.done = true;
+  state.subscribers.forEach((cb) => cb({ done: true }));
+  state.subscribers.clear();
+  // Retain recent job logs briefly for late SSE reconnects, then release memory
+  setTimeout(() => {
+    jobStates.delete(jobId);
+  }, 5 * 60 * 1000);
 }
 
 export function startBackupJobAsync(
@@ -57,6 +116,8 @@ export function startBackupJobAsync(
   const encrypted = Boolean(BACKUP_ENCRYPTION_KEY);
   const ext = encrypted ? "dump.enc" : "dump";
   const storageKey = `${instance.name}/${timestamp}_${type}.${ext}`;
+
+  initJobState(backupId);
 
   sqlite
     .prepare(
@@ -79,6 +140,8 @@ export async function runBackupForInstance(
   const encrypted = Boolean(BACKUP_ENCRYPTION_KEY);
   const ext = encrypted ? "dump.enc" : "dump";
   const storageKey = `${instance.name}/${timestamp}_${type}.${ext}`;
+
+  initJobState(backupId);
 
   sqlite
     .prepare(
@@ -141,12 +204,11 @@ async function executeBackupJob(
         throw new Error(await new Response(encProc.stderr).text());
       }
     } else {
-      const data = await new Response(dumpProc.stdout).arrayBuffer();
+      await streamToFile(dumpProc.stdout, localFile);
       const dumpExit = await dumpProc.exited;
       if (dumpExit !== 0) {
         throw new Error(await new Response(dumpProc.stderr).text());
       }
-      await Bun.write(localFile, data);
     }
 
     const sizeBytes = statSync(localFile).size;
@@ -173,6 +235,7 @@ async function executeBackupJob(
   } catch (err) {
     const durationMs = Date.now() - startMs;
     const msg = err instanceof Error ? err.message : String(err);
+    await Bun.$`rm -f ${localFile}`.quiet().catch(() => {});
     sqlite
       .prepare(
         `UPDATE backups SET status = 'failed', duration_ms = ?, error_message = ? WHERE id = ?`
@@ -181,7 +244,36 @@ async function executeBackupJob(
 
     emitJobLog(backupId, `ERROR: ${msg}`);
     await sendAlert("Backup Failed", `Instance ${instance.name} (${type}): ${msg}`, "high");
+  } finally {
+    finishJobLog(backupId);
   }
+}
+
+async function deleteSingleBackupArtifact(b: BackupRow, s3: S3Client | null) {
+  if (s3) {
+    await s3.delete(b.storage_key);
+  } else {
+    const ext = b.encryption_algo !== "none" ? "dump.enc" : "dump";
+    await Bun.$`rm -f ${join(LOCAL_BACKUP_DIR, `${b.id}.${ext}`)}`.quiet();
+  }
+}
+
+export async function deleteBackupFilesByInstance(instanceId: string): Promise<number> {
+  const rows = sqlite
+    .prepare("SELECT * FROM backups WHERE instance_id = ? AND status = 'success'")
+    .all(instanceId) as BackupRow[];
+  const s3 = getS3Client();
+  let removed = 0;
+
+  for (const b of rows) {
+    try {
+      await deleteSingleBackupArtifact(b, s3);
+      removed++;
+    } catch (err) {
+      console.error(`Failed to delete backup artifact ${b.id} during purge:`, err);
+    }
+  }
+  return removed;
 }
 
 export async function cleanupExpiredBackups(): Promise<number> {
@@ -201,12 +293,7 @@ export async function cleanupExpiredBackups(): Promise<number> {
 
   for (const b of expired) {
     try {
-      if (s3) {
-        await s3.delete(b.storage_key);
-      } else {
-        const ext = b.encryption_algo !== "none" ? "dump.enc" : "dump";
-        await Bun.$`rm -f ${join(LOCAL_BACKUP_DIR, `${b.id}.${ext}`)}`.quiet();
-      }
+      await deleteSingleBackupArtifact(b, s3);
       sqlite.prepare("DELETE FROM backups WHERE id = ?").run(b.id);
       removed++;
     } catch (err) {
@@ -227,6 +314,9 @@ export async function restoreBackupById(backupId: string): Promise<void> {
   if (!backup || backup.status !== "success") {
     throw new Error("Backup not found or not in success state");
   }
+  if (backup.encryption_algo !== "none" && !BACKUP_ENCRYPTION_KEY) {
+    throw new Error("BACKUP_ENCRYPTION_KEY is required to decrypt this backup");
+  }
 
   const instance = sqlite
     .prepare("SELECT * FROM instances WHERE id = ?")
@@ -235,15 +325,19 @@ export async function restoreBackupById(backupId: string): Promise<void> {
     throw new Error("Target instance not found");
   }
 
-  // Safety net: take pre_restore snapshot first
-  await runBackupForInstance(instance, "pre_restore");
+  // Safety net: take pre_restore snapshot first and verify it succeeded
+  const preRestore = await runBackupForInstance(instance, "pre_restore");
+  if (preRestore.status !== "success") {
+    throw new Error(
+      `Safety pre_restore snapshot failed (${preRestore.error_message || "unknown error"}); restore aborted`
+    );
+  }
 
   const tempFile = join(LOCAL_BACKUP_DIR, `restore-${backup.id}.tmp`);
   const s3 = getS3Client();
 
   if (s3) {
-    const s3Data = await s3.file(backup.storage_key).arrayBuffer();
-    await Bun.write(tempFile, s3Data);
+    await streamToFile(s3.file(backup.storage_key).stream(), tempFile);
   } else {
     const localEncrypted = join(
       LOCAL_BACKUP_DIR,
@@ -253,8 +347,15 @@ export async function restoreBackupById(backupId: string): Promise<void> {
   }
 
   const dbUrl = getInstanceAdminUrl(instance);
+  const targetRole = assertPgIdentifier(instance.db_username, "db_username");
+  const wasActive = instance.status === "active";
 
   try {
+    // Terminate active connections before pg_restore --clean to avoid table lock hangs
+    if (wasActive) {
+      await pauseSharedDatabase(instance.db_name, instance.db_username);
+    }
+
     if (backup.encryption_algo !== "none") {
       const decProc = Bun.spawn(
         [
@@ -276,7 +377,7 @@ export async function restoreBackupById(backupId: string): Promise<void> {
       );
 
       const restoreProc = Bun.spawn(
-        ["pg_restore", "--clean", "--if-exists", "--no-owner", "-d", dbUrl],
+        ["pg_restore", "--clean", "--if-exists", "--no-owner", `--role=${targetRole}`, "-d", dbUrl],
         { stdin: decProc.stdout, stderr: "pipe" }
       );
 
@@ -285,7 +386,7 @@ export async function restoreBackupById(backupId: string): Promise<void> {
       if (resExit !== 0) throw new Error(await new Response(restoreProc.stderr).text());
     } else {
       const restoreProc = Bun.spawn(
-        ["pg_restore", "--clean", "--if-exists", "--no-owner", "-d", dbUrl, tempFile],
+        ["pg_restore", "--clean", "--if-exists", "--no-owner", `--role=${targetRole}`, "-d", dbUrl, tempFile],
         { stderr: "pipe" }
       );
       if ((await restoreProc.exited) !== 0) {
@@ -295,7 +396,10 @@ export async function restoreBackupById(backupId: string): Promise<void> {
 
     logAudit("restore", { backupId, storageKey: backup.storage_key }, instance.id);
   } finally {
-    await Bun.$`rm -f ${tempFile}`.quiet();
+    if (wasActive) {
+      await resumeSharedDatabase(instance.db_name, instance.db_username).catch(() => {});
+    }
+    await Bun.$`rm -f ${tempFile}`.quiet().catch(() => {});
   }
 }
 
@@ -308,7 +412,6 @@ export async function getBackupDownloadResponse(backupId: string): Promise<Respo
   }
 
   const s3 = getS3Client();
-  const tempFile = join(LOCAL_BACKUP_DIR, `dl-${backup.id}.tmp`);
 
   if (backup.encryption_algo === "none") {
     if (s3) {
@@ -322,13 +425,23 @@ export async function getBackupDownloadResponse(backupId: string): Promise<Respo
     });
   }
 
-  if (s3) {
-    await Bun.write(tempFile, await s3.file(backup.storage_key).arrayBuffer());
-  } else {
-    await Bun.$`cp ${join(LOCAL_BACKUP_DIR, `${backup.id}.dump.enc`)} ${tempFile}`.quiet();
+  if (!BACKUP_ENCRYPTION_KEY) {
+    return new Response("BACKUP_ENCRYPTION_KEY is not configured", { status: 500 });
   }
 
-  // Decrypt on the fly to standard PostgreSQL .dump format
+  const tempFile = join(LOCAL_BACKUP_DIR, `dl-${backup.id}-${Date.now()}.tmp`);
+  try {
+    if (s3) {
+      await streamToFile(s3.file(backup.storage_key).stream(), tempFile);
+    } else {
+      await Bun.$`cp ${join(LOCAL_BACKUP_DIR, `${backup.id}.dump.enc`)} ${tempFile}`.quiet();
+    }
+  } catch {
+    await Bun.$`rm -f ${tempFile}`.quiet().catch(() => {});
+    return new Response("Failed to fetch backup artifact", { status: 500 });
+  }
+
+  // Stream decrypted output directly without buffering the entire archive in RAM
   const decProc = Bun.spawn(
     [
       "openssl",
@@ -348,15 +461,36 @@ export async function getBackupDownloadResponse(backupId: string): Promise<Respo
     }
   );
 
-  const decryptedBuf = await new Response(decProc.stdout).arrayBuffer();
-  const exitCode = await decProc.exited;
-  await Bun.$`rm -f ${tempFile}`.quiet();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const reader = decProc.stdout.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) controller.enqueue(value);
+        }
+        const exitCode = await decProc.exited;
+        if (exitCode !== 0) {
+          const errText = await new Response(decProc.stderr).text();
+          controller.error(new Error(errText || "OpenSSL decryption failed"));
+          return;
+        }
+        controller.close();
+      } catch (err) {
+        controller.error(err);
+      } finally {
+        reader.releaseLock();
+        await Bun.$`rm -f ${tempFile}`.quiet().catch(() => {});
+      }
+    },
+    async cancel() {
+      decProc.kill();
+      await Bun.$`rm -f ${tempFile}`.quiet().catch(() => {});
+    },
+  });
 
-  if (exitCode !== 0) {
-    return new Response("Failed to decrypt backup", { status: 500 });
-  }
-
-  return new Response(decryptedBuf, {
+  return new Response(stream, {
     headers: {
       "Content-Type": "application/octet-stream",
       "Content-Disposition": `attachment; filename="${backup.id}.dump"`,

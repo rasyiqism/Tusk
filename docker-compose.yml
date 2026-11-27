@@ -30,7 +30,7 @@ services:
     networks:
       - pg_internal
 
-  pgbouncer-tx:
+  pgbouncer:
     image: edoburu/pgbouncer:v1.23.1-p0
     restart: unless-stopped
     depends_on:
@@ -53,37 +53,7 @@ services:
       CLIENT_TLS_CERT_FILE: /etc/pgbouncer/tls/server.crt
       CLIENT_TLS_KEY_FILE: /etc/pgbouncer/tls/server.key
     ports:
-      - "${PGB_BIND_IP:-127.0.0.1}:${PGB_TX_PORT:-6432}:6432"
-    volumes:
-      - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
-      - ./pgbouncer/tls:/etc/pgbouncer/tls:ro
-    command: ["/bin/sh", "-c", "grep -q auth_dbname /etc/pgbouncer/pgbouncer.ini || echo 'auth_dbname = postgres' >> /etc/pgbouncer/pgbouncer.ini; exec /usr/bin/pgbouncer /etc/pgbouncer/pgbouncer.ini"]
-    networks:
-      - pg_internal
-
-  pgbouncer-session:
-    image: edoburu/pgbouncer:v1.23.1-p0
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      LISTEN_PORT: 6433
-      POOL_MODE: session
-      AUTH_TYPE: scram-sha-256
-      AUTH_USER: pgbouncer_auth
-      AUTH_DBNAME: postgres
-      AUTH_QUERY: "SELECT usename, passwd FROM pgbouncer.user_lookup($1)"
-      MAX_CLIENT_CONN: 1000
-      DEFAULT_POOL_SIZE: 25
-      ADMIN_USERS: postgres
-      CLIENT_TLS_SSLMODE: ${PGB_TLS_MODE:-allow}
-      CLIENT_TLS_CERT_FILE: /etc/pgbouncer/tls/server.crt
-      CLIENT_TLS_KEY_FILE: /etc/pgbouncer/tls/server.key
-    ports:
-      - "${PGB_BIND_IP:-127.0.0.1}:${PGB_SESS_PORT:-6433}:6433"
+      - "${PGB_BIND_IP:-127.0.0.1}:${PGB_PORT:-6432}:6432"
     volumes:
       - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
       - ./pgbouncer/tls:/etc/pgbouncer/tls:ro
@@ -97,21 +67,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      pgbouncer-tx:
-        condition: service_started
-      pgbouncer-session:
+      pgbouncer:
         condition: service_started
     ports:
       - "${PANEL_PORT:-3000}:3000"
     environment:
       PG_ADMIN_URL: postgres://postgres:${PG_SUPERUSER_PASSWORD}@postgres:5432/postgres
-      PGB_TX_ADMIN_URL: postgres://postgres:${PG_SUPERUSER_PASSWORD}@pgbouncer-tx:6432/pgbouncer
-      PGB_SESS_ADMIN_URL: postgres://postgres:${PG_SUPERUSER_PASSWORD}@pgbouncer-session:6433/pgbouncer
+      PGB_ADMIN_URL: postgres://postgres:${PG_SUPERUSER_PASSWORD}@pgbouncer:6432/pgbouncer
+      PGB_TX_ADMIN_URL: postgres://postgres:${PG_SUPERUSER_PASSWORD}@pgbouncer:6432/pgbouncer
       PANEL_ADMIN_PASSWORD_HASH: ${PANEL_ADMIN_PASSWORD_HASH}
       PANEL_TOTP_SECRET: ${PANEL_TOTP_SECRET:-}
       MASTER_KEY: ${MASTER_KEY}
       BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY}
-      DEDICATED_WALG_IMAGE: ${DEDICATED_WALG_IMAGE:-postgres:17-walg}
       S3_ENDPOINT: ${S3_ENDPOINT}
       S3_BUCKET: ${S3_BUCKET}
       S3_REGION: ${S3_REGION:-us-east-1}
@@ -119,6 +86,7 @@ services:
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
       NTFY_URL: ${NTFY_URL:-}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      ALLOW_INTERNAL_URLS: ${ALLOW_INTERNAL_URLS:-true}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
@@ -129,32 +97,12 @@ services:
       DATA_DIR: /app/data
     volumes:
       - panel_sqlite:/app/data
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - pg_internal
-
-  wireguard:
-    image: ghcr.io/wg-easy/wg-easy:14
-    profiles: ["wireguard"]
-    restart: unless-stopped
-    environment:
-      WG_HOST: ${PUBLIC_DB_HOST:-localhost}
-      PASSWORD_HASH: ${PANEL_ADMIN_PASSWORD_HASH}
-    volumes:
-      - wg_config:/etc/wireguard
-    ports:
-      - "51820:51820/udp"
-      - "51821:51821/tcp"
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
     networks:
       - pg_internal
 
 volumes:
   pg_shared_data:
   panel_sqlite:
-  wg_config:
 
 networks:
   pg_internal:

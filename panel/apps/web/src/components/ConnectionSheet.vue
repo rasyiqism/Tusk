@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import { useToast } from "./useToast";
 import AppIcon from "./AppIcon.vue";
 import BottomSheet from "./BottomSheet.vue";
@@ -18,8 +18,16 @@ const emit = defineEmits<{
 }>();
 
 const toast = useToast();
-const activeTab = ref<"internal" | "transaction" | "session" | "direct">("transaction");
+const activeTab = ref<"transaction" | "direct" | "internal">("transaction");
 const copied = ref(false);
+const showPass = ref(false);
+
+watch(
+  () => props.modelValue,
+  (open) => {
+    if (!open) showPass.value = false;
+  }
+);
 
 async function copyEnv() {
   if (!props.creds) return;
@@ -43,7 +51,7 @@ async function copyEnv() {
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div class="flex flex-wrap gap-1.5 text-xs">
           <button
-            v-for="tab in (['internal', 'transaction', 'session', 'direct'] as const)"
+            v-for="tab in (['transaction', 'direct', 'internal'] as const)"
             :key="tab"
             @click="activeTab = tab"
             :class="
@@ -53,18 +61,42 @@ async function copyEnv() {
             "
             class="rounded-lg px-2.5 py-1 capitalize transition"
           >
-            {{ tab }}
+            {{ tab === "transaction" ? "Transaction (:6432)" : tab === "direct" ? "Direct / Migrasi (:5432)" : "Internal (Docker)" }}
           </button>
         </div>
         <button
           @click="copyEnv"
-          class="inline-flex items-center gap-1.5 rounded-lg border border-neutral-700 bg-neutral-800 px-2.5 py-1 text-xs text-neutral-100 hover:bg-neutral-700"
+          class="inline-flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-1 text-xs font-medium text-neutral-200 transition hover:bg-neutral-800"
         >
-          <AppIcon name="copy" size="xs" />
-          <span>{{ copied ? "Tersalin" : "Salin" }}</span>
+          <AppIcon :name="copied ? 'check' : 'copy'" size="xs" />
+          <span>{{ copied ? "Tersalin" : "Salin URL" }}</span>
         </button>
       </div>
-      <pre class="overflow-x-auto rounded-xl border border-neutral-800 bg-neutral-950 p-3 font-mono text-xs text-emerald-400">DATABASE_URL="{{ creds.connectionStrings[activeTab] }}"</pre>
+
+      <div class="space-y-1.5">
+        <div class="text-[11px] text-neutral-400">
+          <span v-if="activeTab === 'transaction'">Direkomendasikan untuk aplikasi web & serverless (Next.js, Vue, Node, Go) via PgBouncer.</span>
+          <span v-else-if="activeTab === 'direct'">Gunakan untuk migrasi skema (Drizzle, Prisma), DDL, dan sesi interaktif langsung ke PostgreSQL.</span>
+          <span v-else>Koneksi jaringan internal Docker antar kontainer dalam satu VPS Dokploy.</span>
+        </div>
+        <pre class="overflow-x-auto rounded-xl border border-neutral-800 bg-neutral-950 p-3.5 font-mono text-xs text-emerald-400 break-all select-all">{{ creds.connectionStrings[activeTab] }}</pre>
+      </div>
+
+      <div class="rounded-xl border border-neutral-800 bg-neutral-900/50 p-3 text-xs text-neutral-400 space-y-1.5">
+        <div><strong class="text-neutral-200">Database:</strong> <span class="font-mono">{{ creds.dbName }}</span></div>
+        <div v-if="creds.password" class="flex items-center justify-between gap-2">
+          <div>
+            <strong class="text-neutral-200">Password:</strong>
+            <span class="ml-1 font-mono text-neutral-300">{{ showPass ? creds.password : "••••••••••••••••••••" }}</span>
+          </div>
+          <button
+            @click="showPass = !showPass"
+            class="text-[11px] font-medium text-indigo-400 hover:text-indigo-300"
+          >
+            {{ showPass ? "Sembunyikan" : "Tampilkan" }}
+          </button>
+        </div>
+      </div>
     </div>
   </BottomSheet>
 </template>

@@ -18,7 +18,8 @@ export const settingsRoutes = new Elysia({ prefix: "/settings" })
   .put(
     "/",
     async ({ body, set }) => {
-      const allowInternal = process.env.ALLOW_INTERNAL_WEBHOOKS === "true";
+      const allowInternal =
+        process.env.ALLOW_INTERNAL_URLS === "true" || process.env.ALLOW_INTERNAL_WEBHOOKS === "true";
       if (!allowInternal) {
         if (body.ntfy_url && !(await isSafeOutboundUrl(body.ntfy_url))) {
           set.status = 400;

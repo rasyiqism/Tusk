@@ -134,7 +134,7 @@ onMounted(checkAuth);
           <span class="h-2.5 w-2.5 rounded-xs bg-emerald-400"></span>
           <span class="font-extrabold tracking-tight text-neutral-100">PG Panel</span>
         </div>
-        <span class="rounded-sm bg-neutral-800 px-1.5 py-0.5 font-mono text-[10px] text-neutral-400">v2.1</span>
+        <span class="rounded-sm bg-neutral-800 px-1.5 py-0.5 font-mono text-[10px] text-neutral-400">v2.2</span>
       </RouterLink>
 
       <nav class="flex-1 divide-y divide-neutral-800/40 p-2">

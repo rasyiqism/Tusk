@@ -41,9 +41,8 @@ function isSafeIpAddress(addr: string, version: number): boolean {
 }
 
 /**
- * Prevent SSRF: only allow http/https URL toward public internet hosts.
- * Rejects private/loopback/link-local IP literals and verifies ALL DNS records
- * returned by lookup(all: true) to block dual-stack or rebinding bypasses.
+ * Prevent SSRF: only allow http/https URL toward public internet hosts,
+ * unless ALLOW_INTERNAL_URLS=true is enabled for self-hosted container environments.
  */
 export async function isSafeOutboundUrl(urlString: string): Promise<boolean> {
   let url: URL;
@@ -53,6 +52,11 @@ export async function isSafeOutboundUrl(urlString: string): Promise<boolean> {
     return false;
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+
+  const allowInternal = process.env.ALLOW_INTERNAL_URLS === 'true' || process.env.ALLOW_INTERNAL_WEBHOOKS === 'true';
+  if (allowInternal) {
+    return true;
+  }
 
   const hostname = url.hostname.replace(/^\[|\]$/g, '');
   const ipVersion = isIP(hostname);
@@ -73,8 +77,6 @@ export async function isSafeOutboundUrl(urlString: string): Promise<boolean> {
 
 /**
  * Safe outbound fetch wrapper preventing HTTP redirect SSRF bypasses.
- * Always calls isSafeOutboundUrl on initial URL and every redirect Location hop,
- * forcing redirect: 'manual'. Never pair raw fetch() after a one-time URL check.
  */
 export async function safeOutboundFetch(
   urlString: string,
@@ -111,8 +113,6 @@ export async function safeOutboundFetch(
 
 /**
  * Resolve real client IP behind reverse proxies without allowing direct-client header spoofing.
- * Proxy headers (cf-connecting-ip, x-real-ip, x-forwarded-for) are ONLY trusted when the
- * underlying socket connection comes from loopback/private proxy ranges (or is abstracted in unit tests).
  */
 export function resolveClientIp(ctx: {
   server?: any;
@@ -129,9 +129,15 @@ export function resolveClientIp(ctx: {
     ).trim();
   };
 
+  const hasSocketIntrospection = typeof ctx.server?.requestIP === "function";
   const rawSocketIp = String(ctx.server?.requestIP?.(ctx.request)?.address || '').trim();
   const cleanSocketIp = rawSocketIp.replace(/^\[|\]$/g, '');
   const socketVersion = cleanSocketIp ? isIP(cleanSocketIp) : 0;
+
+  if (hasSocketIntrospection && !cleanSocketIp) {
+    return 'unknown';
+  }
+
   const socketIsProxy =
     !cleanSocketIp ||
     (socketVersion === 4 && isPrivateIpv4(cleanSocketIp)) ||
@@ -162,6 +168,12 @@ export function resolveClientIp(ctx: {
 export async function isSafeOutboundHost(hostname: string): Promise<boolean> {
   const cleanHost = (hostname || '').trim().replace(/^\[|\]$/g, '').toLowerCase();
   if (!cleanHost) return false;
+
+  const allowInternal = process.env.ALLOW_INTERNAL_URLS === 'true' || process.env.ALLOW_INTERNAL_WEBHOOKS === 'true';
+  if (allowInternal) {
+    return true;
+  }
+
   const ipVersion = isIP(cleanHost);
   if (ipVersion !== 0) return isSafeIpAddress(cleanHost, ipVersion);
 

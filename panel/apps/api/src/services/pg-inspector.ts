@@ -1,5 +1,5 @@
 import postgres from "postgres";
-import { assertPgIdentifier } from "../lib/crypto";
+import { assertPgIdentifier, assertPgObjectName } from "../lib/crypto";
 import { PG_ADMIN_URL, pgAdmin } from "./postgres";
 
 export interface TableInfo {
@@ -60,7 +60,9 @@ export async function getLiveConnections(dbName?: string, customAdminUrl?: strin
                  EXTRACT(EPOCH FROM (now() - query_start))::int AS duration_sec,
                  LEFT(query, 240) AS query
           FROM pg_stat_activity
-          WHERE datname = ${dbName} AND pid <> pg_backend_pid()
+          WHERE datname = ${dbName}
+            AND pid <> pg_backend_pid()
+            AND backend_type = 'client backend'
           ORDER BY query_start ASC NULLS LAST
         `
       : await client`
@@ -68,7 +70,9 @@ export async function getLiveConnections(dbName?: string, customAdminUrl?: strin
                  EXTRACT(EPOCH FROM (now() - query_start))::int AS duration_sec,
                  LEFT(query, 240) AS query
           FROM pg_stat_activity
-          WHERE pid <> pg_backend_pid() AND datname IS NOT NULL
+          WHERE pid <> pg_backend_pid()
+            AND datname IS NOT NULL
+            AND backend_type = 'client backend'
           ORDER BY query_start ASC NULLS LAST
         `;
 
@@ -91,7 +95,14 @@ export async function terminatePid(pid: number, customAdminUrl?: string): Promis
     ? postgres(customAdminUrl, { max: 1, connect_timeout: 3, idle_timeout: 5 })
     : pgAdmin;
   try {
-    const [res] = await client`SELECT pg_terminate_backend(${pid}) AS terminated`;
+    const [res] = await client`
+      SELECT pg_terminate_backend(pid) AS terminated
+      FROM pg_stat_activity
+      WHERE pid = ${pid}
+        AND pid <> pg_backend_pid()
+        AND backend_type = 'client backend'
+        AND usename <> 'postgres'
+    `;
     return Boolean(res?.terminated);
   } finally {
     if (customAdminUrl) await client.end({ timeout: 1 }).catch(() => {});
@@ -185,8 +196,8 @@ export async function getTableColumns(
   tableRaw: string,
   customAdminUrl?: string
 ): Promise<ColumnInfo[]> {
-  const schemaName = assertPgIdentifier(schemaRaw, "schema_name");
-  const tableName = assertPgIdentifier(tableRaw, "table_name");
+  const schemaName = assertPgObjectName(schemaRaw, "schema_name");
+  const tableName = assertPgObjectName(tableRaw, "table_name");
   const client = postgres(resolveDbUrl(dbNameRaw, customAdminUrl), {
     max: 1,
     connect_timeout: 3,
@@ -218,8 +229,8 @@ export async function getTablePreview(
   tableRaw: string,
   customAdminUrl?: string
 ): Promise<Record<string, unknown>[]> {
-  const schemaName = assertPgIdentifier(schemaRaw, "schema_name");
-  const tableName = assertPgIdentifier(tableRaw, "table_name");
+  const schemaName = assertPgObjectName(schemaRaw, "schema_name");
+  const tableName = assertPgObjectName(tableRaw, "table_name");
   const client = postgres(resolveDbUrl(dbNameRaw, customAdminUrl), {
     max: 1,
     connect_timeout: 3,

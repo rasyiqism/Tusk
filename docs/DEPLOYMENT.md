@@ -1,4 +1,4 @@
-# Panduan Deployment & Operasional Produksi
+# Panduan Deployment & Operasional Produksi (Tusk v2.2)
 
 Panduan ini berisi konfigurasi siap pakai (*copy-pasteable*) untuk menjalankan **PG Control Panel** di VPS Dokploy maupun server mandiri tanpa ketergantungan SaaS pihak ketiga.
 
@@ -18,38 +18,32 @@ Skrip ini otomatis membuat:
 
 ---
 
-## 2. Skenario Koneksi Produksi (Semua Aktif Bersamaan)
+## 2. Skenario Koneksi Produksi
 
 ### A. Aplikasi di VPS Dokploy yang Sama (Internal Docker)
-Tambahkan aplikasi Anda ke network `tusk_pg_internal` dan gunakan tab **Internal** dari panel:
+Tambahkan aplikasi Anda ke network `pg_internal` dan gunakan tab **Internal** dari panel:
 ```env
-DATABASE_URL="postgres://app_user:PASSWORD@pgbouncer-tx:6432/app_db?sslmode=disable"
+DATABASE_URL="postgres://app_user:PASSWORD@pgbouncer:6432/app_db?sslmode=disable"
 ```
 
-### B. Akses via WireGuard VPN
-1. Jalankan container WireGuard opsional:
-   ```bash
-   docker compose --profile wireguard up -d
-   ```
-2. Di `.env`, ikat port PgBouncer ke IP interface WireGuard (atau `0.0.0.0` dengan firewall tertutup):
-   ```env
-   PUBLIC_DB_HOST=10.8.0.1
-   PGB_BIND_IP=10.8.0.1
-   ```
-3. Di menu **Settings**, ubah **Host Publik DB** ke `10.8.0.1` dan **SSL Mode** ke `disable` (atau `require`).
-
-### C. Akses Eksternal via TLS + IP Allowlist
-1. Di `.env`, buka bind IP dengan mode TLS wajib:
+### B. Akses Eksternal via TLS + IP Allowlist
+1. Di `.env`, atur host publik dan mode TLS:
    ```env
    PUBLIC_DB_HOST=db.domainanda.com
    PGB_BIND_IP=0.0.0.0
+   PGB_PORT=6432
    PGB_TLS_MODE=require
    ```
-2. Kunci firewall VPS agar port `6432` & `6433` hanya menerima IP server aplikasi Anda:
+2. Kunci firewall VPS (UFW) agar port `6432` hanya menerima trafik dari IP server website Anda:
    ```bash
    sudo ufw allow from <IP_SERVER_APP> to any port 6432 proto tcp
-   sudo ufw allow from <IP_SERVER_APP> to any port 6433 proto tcp
    ```
+
+### C. Migrasi Skema & DDL (Prisma / Drizzle)
+Untuk operasi migrasi yang memerlukan direct session atau DDL locking, gunakan port direct `:5432`:
+```env
+DIRECT_URL="postgres://app_user:PASSWORD@db.domainanda.com:5432/app_db?sslmode=require"
+```
 
 ---
 
@@ -65,25 +59,12 @@ docker compose up -d pg-panel
 
 ---
 
-## 4. Build Custom Image Dedicated WAL-G
+## 4. Disaster Recovery (Cold DR)
 
-Untuk mengaktifkan Continuous PITR pada container **Dedicated Enterprise**:
+Jika VPS utama mengalami kerusakan total, pulihkan database ke server baru dengan skrip Cold DR:
 ```bash
-docker build -t postgres:17-walg ./docker/postgres-walg
+BACKUP_ENCRYPTION_KEY="kunci-enkripsi-anda" ./scripts/cold-dr.sh \
+  ./path/ke/backup_file.dump.enc \
+  postgres://postgres:password@localhost:5432/target_db
 ```
-Lalu set di `.env`:
-```env
-DEDICATED_WALG_IMAGE=postgres:17-walg
-```
-
----
-
-## 5. Cold Disaster Recovery (DR)
-
-```bash
-# 1. Restore database Shared dari file terenkripsi (.dump.enc)
-BACKUP_ENCRYPTION_KEY="<key_dari_env>" ./scripts/cold-dr.sh shared backup.dump.enc "postgres://user:pass@host:5432/dbname"
-
-# 2. Restore Dedicated Enterprise via WAL-G PITR ke timestamp tertentu
-WALG_S3_PREFIX="s3://pg-backups/walg/erp_prod" ./scripts/cold-dr.sh dedicated /var/lib/postgresql/data "2026-11-26T15:00:00Z"
-```
+Skrip akan otomatis mendekripsi stream dengan OpenSSL AES-256-CBC dan me-restore seluruh data via `pg_restore`.

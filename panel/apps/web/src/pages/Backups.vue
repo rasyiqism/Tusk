@@ -3,7 +3,6 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 import { api } from "../lib/api";
 import { useToast } from "../components/useToast";
 import AppIcon from "../components/AppIcon.vue";
-import BottomSheet from "../components/BottomSheet.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
 
 interface BackupItem {
@@ -14,8 +13,9 @@ interface BackupItem {
   type: string;
   size_bytes: number;
   duration_ms: number;
-  status: string;
+  storage_key: string;
   encryption_algo: string;
+  status: string;
   error_message: string | null;
   verified_restore: number;
   created_at: string;
@@ -24,7 +24,7 @@ interface BackupItem {
 interface InstanceOpt {
   id: string;
   name: string;
-  mode: string;
+  db_name: string;
 }
 
 const toast = useToast();
@@ -34,10 +34,6 @@ const selectedInstanceId = ref("");
 const verifying = ref(false);
 const liveLogs = ref<string[]>([]);
 const activeJobId = ref<string | null>(null);
-const pitrTargetTime = ref("");
-const pitrInstanceId = ref<string | null>(null);
-const pitrSheetOpen = ref(false);
-const pitrSubmitting = ref(false);
 const restoreTarget = ref<BackupItem | null>(null);
 let activeEs: EventSource | null = null;
 
@@ -77,45 +73,11 @@ function runBackupStream() {
           es.close();
           void load();
         };
+      } else {
+        liveLogs.value.push("ERROR: Gagal memulai job backup.");
+        toast.error("Gagal memulai backup");
       }
     });
-}
-
-async function runWalgBase(id: string) {
-  const res = await api.api.backups({ id })["walg-base"].post();
-  if (res.data && "ok" in res.data && res.data.ok) {
-    toast.success("Base backup WAL-G dijalankan");
-  } else {
-    toast.error("Gagal menjalankan WAL-G base backup");
-  }
-}
-
-function openPitr(id: string) {
-  pitrInstanceId.value = id;
-  pitrTargetTime.value = new Date().toISOString();
-  pitrSheetOpen.value = true;
-}
-
-async function submitPitr() {
-  if (!pitrInstanceId.value || !pitrTargetTime.value) return;
-  pitrSubmitting.value = true;
-  const res = await api.api.backups({ id: pitrInstanceId.value })["pitr-restore"].post({
-    targetTime: pitrTargetTime.value,
-  });
-  pitrSubmitting.value = false;
-  if (res.data && "ok" in res.data && res.data.ok) {
-    toast.success(res.data.message || "PITR selesai");
-    pitrSheetOpen.value = false;
-    pitrInstanceId.value = null;
-    await load();
-  } else {
-    const err =
-      (res.data && "error" in res.data && String(res.data.error)) ||
-      (res.error?.value && typeof res.error.value === "object" && "error" in res.error.value
-        ? String((res.error.value as { error: unknown }).error)
-        : "PITR gagal");
-    toast.error(err);
-  }
 }
 
 async function verifyLatest() {
@@ -123,10 +85,10 @@ async function verifyLatest() {
   const res = await api.api.backups["verify-latest"].post();
   verifying.value = false;
   if (res.data && "tested" in res.data && res.data.tested) {
-    toast.success(`Uji restore lulus (${res.data.tableCount} tabel)`);
+    toast.success(`Integritas arsip teruji valid (${res.data.tableCount} tabel)`);
     await load();
   } else {
-    const err = res.data && "error" in res.data && res.data.error ? res.data.error : "Gagal menguji restore";
+    const err = res.data && "error" in res.data && res.data.error ? res.data.error : "Gagal menguji backup";
     toast.error(err);
   }
 }
@@ -138,38 +100,41 @@ async function confirmRestore() {
   const res = await api.api.backups({ id: b.id }).restore.post();
   if (res.error) {
     toast.error("Restore gagal");
-    return;
+  } else {
+    toast.success("Database berhasil dipulihkan");
+    await load();
   }
-  toast.success("Restore selesai");
-  await load();
 }
 
 onMounted(load);
 onBeforeUnmount(() => {
-  if (activeEs) activeEs.close();
+  if (activeEs) {
+    activeEs.close();
+    activeEs = null;
+  }
 });
 </script>
 
 <template>
   <div class="w-full divide-y divide-neutral-800">
-    <!-- Toolbar -->
-    <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 sm:px-6">
+    <!-- Action Bar -->
+    <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
       <div class="flex flex-wrap items-center gap-2">
         <select
           v-model="selectedInstanceId"
-          class="rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-200"
+          class="rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-100"
         >
           <option v-for="inst in instances" :key="inst.id" :value="inst.id">
-            {{ inst.name }} ({{ inst.mode }})
+            {{ inst.name }} ({{ inst.db_name }})
           </option>
         </select>
         <button
           @click="runBackupStream"
           :disabled="!selectedInstanceId"
-          class="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-neutral-950 transition hover:bg-neutral-200 disabled:opacity-50"
+          class="inline-flex items-center gap-1.5 rounded-xl bg-white px-3.5 py-1.5 text-xs font-semibold text-neutral-950 transition hover:bg-neutral-200 disabled:opacity-50"
         >
-          <AppIcon name="upload" size="xs" />
-          <span>Backup</span>
+          <AppIcon name="database" size="xs" />
+          <span>Backup Sekarang</span>
         </button>
       </div>
 
@@ -177,45 +142,28 @@ onBeforeUnmount(() => {
         <button
           @click="verifyLatest"
           :disabled="verifying"
-          class="inline-flex items-center gap-1.5 rounded-lg border border-emerald-800 bg-emerald-950/40 px-3 py-1.5 text-xs font-medium text-emerald-300 transition hover:bg-emerald-950/70 disabled:opacity-50"
+          class="inline-flex items-center gap-1.5 rounded-xl border border-neutral-800 bg-neutral-900 px-3.5 py-1.5 text-xs font-medium text-neutral-200 transition hover:bg-neutral-800 disabled:opacity-50"
         >
-          <AppIcon :name="verifying ? 'spinner' : 'verified'" size="xs" :class="{ 'animate-spin': verifying }" />
-          <span>{{ verifying ? "Menguji..." : "Uji" }}</span>
+          <AppIcon name="verified" size="xs" />
+          <span>{{ verifying ? "Menguji..." : "Uji Integritas" }}</span>
         </button>
         <button
           @click="load"
-          class="inline-flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-900 px-2.5 py-1.5 text-xs text-neutral-200 hover:bg-neutral-800"
-          aria-label="Segarkan"
+          class="rounded-xl border border-neutral-800 bg-neutral-900 p-1.5 text-neutral-400 hover:text-neutral-100"
+          aria-label="Refresh"
         >
           <AppIcon name="refresh" size="xs" />
         </button>
       </div>
     </div>
 
-    <!-- Live SSE Terminal -->
-    <div v-if="liveLogs.length > 0" class="bg-neutral-900/70 px-4 py-3 sm:px-6 space-y-2">
+    <!-- Live Backup Log Console -->
+    <div v-if="liveLogs.length > 0" class="space-y-2 px-4 py-3 sm:px-6 bg-neutral-950/60">
       <div class="flex items-center justify-between text-xs text-neutral-400">
-        <span class="font-mono">Job {{ activeJobId }}</span>
-        <button @click="liveLogs = []" class="hover:text-neutral-200">Tutup</button>
+        <span class="font-mono">Live Job Output</span>
+        <button @click="liveLogs = []" class="hover:text-neutral-200 text-[11px]">Tutup</button>
       </div>
       <pre class="max-h-44 overflow-y-auto rounded-lg border border-neutral-800 bg-neutral-950 p-3 font-mono text-xs text-emerald-400">{{ liveLogs.join("\n") }}</pre>
-    </div>
-
-    <!-- Dedicated WAL-G Bar -->
-    <div
-      v-if="instances.some((i) => i.mode === 'dedicated')"
-      class="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-6 bg-neutral-900/30"
-    >
-      <span class="text-xs font-semibold uppercase tracking-wider text-neutral-400">WAL-G PITR:</span>
-      <div
-        v-for="inst in instances.filter((i) => i.mode === 'dedicated')"
-        :key="inst.id"
-        class="inline-flex items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900 px-2.5 py-1 text-xs"
-      >
-        <span class="font-mono text-emerald-400">{{ inst.name }}</span>
-        <button @click="runWalgBase(inst.id)" class="text-indigo-400 hover:underline">Base</button>
-        <button @click="openPitr(inst.id)" class="text-amber-400 hover:underline">PITR</button>
-      </div>
     </div>
 
     <!-- Backups Table -->
@@ -294,41 +242,11 @@ onBeforeUnmount(() => {
       </table>
     </div>
 
-    <BottomSheet v-model="pitrSheetOpen" title="Point-in-Time Recovery (PITR)">
-      <div class="space-y-4">
-        <div class="space-y-1.5">
-          <label class="block text-xs font-semibold text-neutral-300">Target Timestamp (ISO UTC)</label>
-          <input
-            v-model="pitrTargetTime"
-            placeholder="2026-11-26T15:00:00Z"
-            class="w-full rounded-xl border border-neutral-800 bg-neutral-950 px-3.5 py-2.5 font-mono text-sm text-neutral-100"
-          />
-        </div>
-      </div>
-      <template #footer>
-        <div class="flex justify-end gap-2">
-          <button
-            @click="pitrSheetOpen = false"
-            class="rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-xs font-medium text-neutral-300"
-          >
-            Batal
-          </button>
-          <button
-            @click="submitPitr"
-            :disabled="pitrSubmitting"
-            class="rounded-xl bg-amber-600 px-4 py-2 text-xs font-semibold text-white hover:bg-amber-500 disabled:opacity-50"
-          >
-            {{ pitrSubmitting ? "Memulihkan..." : "Pulihkan" }}
-          </button>
-        </div>
-      </template>
-    </BottomSheet>
-
     <ConfirmModal
       :open="restoreTarget !== null"
       title="Pulihkan Database"
       :message="`Timpa ${restoreTarget?.db_name} dengan backup ${restoreTarget?.created_at}? Snapshot pengaman pre_restore akan dibuat otomatis terlebih dahulu.`"
-      confirm-label="Pulihkan"
+      confirm-label="Pulihkan Database"
       :danger="true"
       @confirm="confirmRestore"
       @cancel="restoreTarget = null"

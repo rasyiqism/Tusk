@@ -39,13 +39,13 @@ S3_SECRET_ACCESS_KEY=
 
 NTFY_URL=
 ALERT_WEBHOOK_URL=
+ALLOW_INTERNAL_URLS=true
 
 PANEL_PORT=3000
 DATA_DIR=/app/data
 PUBLIC_DB_HOST=localhost
 PGB_BIND_IP=127.0.0.1
-PGB_TX_PORT=6432
-PGB_SESS_PORT=6433
+PGB_PORT=6432
 PGB_TLS_MODE=allow
 EOF
 
@@ -55,7 +55,7 @@ if [[ ! -f "$ROOT_DIR/pgbouncer/tls/server.crt" ]]; then
     -keyout "$ROOT_DIR/pgbouncer/tls/server.key" \
     -out "$ROOT_DIR/pgbouncer/tls/server.crt" \
     -subj "/CN=pgbouncer" \
-    -addext "subjectAltName=DNS:localhost,DNS:pgbouncer-tx,DNS:pgbouncer-session,IP:127.0.0.1" 2>/dev/null
+    -addext "subjectAltName=DNS:localhost,DNS:pgbouncer,IP:127.0.0.1" 2>/dev/null
   chmod 644 "$ROOT_DIR/pgbouncer/tls/server.crt" "$ROOT_DIR/pgbouncer/tls/server.key"
 fi
 

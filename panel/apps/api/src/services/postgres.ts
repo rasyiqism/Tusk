@@ -1,6 +1,6 @@
 import postgres from "postgres";
 import type { InstanceRow } from "../db/schema";
-import { assertPgIdentifier, decryptSecret } from "../lib/crypto";
+import { assertPgIdentifier } from "../lib/crypto";
 import { getPanelSettings } from "./alert";
 
 export const PG_ADMIN_URL =
@@ -24,9 +24,9 @@ export function buildConnectionStrings(
   username: string,
   password: string,
   txPort = 6432,
-  sessPort = 6433,
+  sessPort = 5432,
   directPort = 5432,
-  internalHost = "pgbouncer-tx"
+  internalHost = "pgbouncer"
 ): ConnectionStrings {
   const settings = getPanelSettings();
   const host = settings.public_db_host || "localhost";
@@ -53,66 +53,65 @@ export async function createSharedDatabase(
   await pgAdmin.unsafe(
     `CREATE ROLE "${username}" WITH LOGIN PASSWORD '${password.replace(/'/g, "''")}' NOSUPERUSER NOCREATEDB NOCREATEROLE`
   );
-  await pgAdmin.unsafe(
-    `ALTER ROLE "${username}" SET statement_timeout = '30s'`
-  );
-  await pgAdmin.unsafe(
-    `ALTER ROLE "${username}" SET idle_in_transaction_session_timeout = '15s'`
-  );
-  await pgAdmin.unsafe(
-    `ALTER ROLE "${username}" SET temp_file_limit = '500MB'`
-  );
 
-  // Create isolated database owned by the role and revoke public access
-  await pgAdmin.unsafe(`CREATE DATABASE "${dbName}" OWNER "${username}"`);
-  await pgAdmin.unsafe(`REVOKE ALL ON DATABASE "${dbName}" FROM PUBLIC`);
-  await pgAdmin.unsafe(`GRANT ALL ON DATABASE "${dbName}" TO "${username}"`);
+  try {
+    await pgAdmin.unsafe(`ALTER ROLE "${username}" SET statement_timeout = '30s'`);
+    await pgAdmin.unsafe(`ALTER ROLE "${username}" SET idle_in_transaction_session_timeout = '15s'`);
+    await pgAdmin.unsafe(`ALTER ROLE "${username}" SET temp_file_limit = '500MB'`);
+
+    // Create isolated database owned by the role and revoke public access
+    await pgAdmin.unsafe(`CREATE DATABASE "${dbName}" OWNER "${username}"`);
+    await pgAdmin.unsafe(`REVOKE ALL ON DATABASE "${dbName}" FROM PUBLIC`);
+    await pgAdmin.unsafe(`GRANT ALL ON DATABASE "${dbName}" TO "${username}"`);
+  } catch (err) {
+    // Rollback orphaned role if database creation or grant failed
+    await pgAdmin.unsafe(`DROP ROLE IF EXISTS "${username}"`).catch(() => {});
+    throw err;
+  }
+}
+
+export async function dropSharedDatabaseAndRole(dbNameRaw: string, usernameRaw: string) {
+  const dbName = assertPgIdentifier(dbNameRaw, "db_name");
+  const username = assertPgIdentifier(usernameRaw, "db_username");
+
+  await pgAdmin`
+    SELECT pg_terminate_backend(pid)
+    FROM pg_stat_activity
+    WHERE datname = ${dbName}
+      AND pid <> pg_backend_pid()
+  `;
+  await pgAdmin.unsafe(`DROP DATABASE IF EXISTS "${dbName}"`);
+  await pgAdmin.unsafe(`DROP ROLE IF EXISTS "${username}"`);
 }
 
 export function getInstanceAdminUrl(instance: InstanceRow): string {
   const dbName = assertPgIdentifier(instance.db_name, "db_name");
-  if (instance.mode === "dedicated") {
-    const safeName = assertPgIdentifier(instance.name, "name");
-    const safeUser = assertPgIdentifier(instance.db_username, "db_username");
-    const password = instance.encrypted_password ? decryptSecret(instance.encrypted_password) : "";
-    return `postgres://${encodeURIComponent(safeUser)}:${encodeURIComponent(password)}@pg-ded-${safeName}:5432/${dbName}`;
-  }
   const url = new URL(PG_ADMIN_URL);
   url.pathname = `/${dbName}`;
   return url.toString();
 }
 
-export async function resetRolePassword(
-  usernameRaw: string,
-  newPassword: string,
-  customAdminUrl?: string
-) {
+export async function resetRolePassword(usernameRaw: string, newPassword: string) {
   const username = assertPgIdentifier(usernameRaw, "db_username");
-  const client = customAdminUrl
-    ? postgres(customAdminUrl, { max: 1, connect_timeout: 3 })
-    : pgAdmin;
-  try {
-    await client.unsafe(
-      `ALTER ROLE "${username}" WITH PASSWORD '${newPassword.replace(/'/g, "''")}'`
-    );
-  } finally {
-    if (customAdminUrl) {
-      await client.end({ timeout: 1 }).catch(() => {});
-    }
-  }
+  await pgAdmin.unsafe(
+    `ALTER ROLE "${username}" WITH PASSWORD '${newPassword.replace(/'/g, "''")}'`
+  );
 }
 
 export async function pauseSharedDatabase(dbNameRaw: string, usernameRaw: string) {
   const dbName = assertPgIdentifier(dbNameRaw, "db_name");
   const username = assertPgIdentifier(usernameRaw, "db_username");
 
-  await pgAdmin.unsafe(`ALTER DATABASE "${dbName}" WITH ALLOW_CONNECTIONS = false`);
+  // Disable role login & public connect without setting ALLOW_CONNECTIONS = false,
+  // keeping superuser access open for pg_dump, pg_restore, and table inspection.
+  await pgAdmin.unsafe(`REVOKE CONNECT ON DATABASE "${dbName}" FROM PUBLIC`);
   await pgAdmin.unsafe(`ALTER ROLE "${username}" NOLOGIN`);
   await pgAdmin`
     SELECT pg_terminate_backend(pid)
     FROM pg_stat_activity
     WHERE datname = ${dbName}
       AND pid <> pg_backend_pid()
+      AND usename <> current_user
   `;
 }
 
@@ -120,7 +119,7 @@ export async function resumeSharedDatabase(dbNameRaw: string, usernameRaw: strin
   const dbName = assertPgIdentifier(dbNameRaw, "db_name");
   const username = assertPgIdentifier(usernameRaw, "db_username");
 
-  await pgAdmin.unsafe(`ALTER DATABASE "${dbName}" WITH ALLOW_CONNECTIONS = true`);
+  await pgAdmin.unsafe(`GRANT CONNECT ON DATABASE "${dbName}" TO "${username}"`);
   await pgAdmin.unsafe(`ALTER ROLE "${username}" LOGIN`);
 }
 
@@ -132,8 +131,7 @@ export async function cloneSharedDatabase(
   sourceDbRaw: string,
   targetDbRaw: string,
   targetUserRaw: string,
-  targetPassword: string,
-  sourceAdminUrl?: string
+  targetPassword: string
 ) {
   const sourceDb = assertPgIdentifier(sourceDbRaw, "source_db");
   const targetDb = assertPgIdentifier(targetDbRaw, "target_db");
@@ -141,37 +139,35 @@ export async function cloneSharedDatabase(
 
   await createSharedDatabase(targetDb, targetUser, targetPassword);
 
-  let srcConn = sourceAdminUrl;
-  if (!srcConn) {
-    const srcUrl = new URL(PG_ADMIN_URL);
-    srcUrl.pathname = `/${sourceDb}`;
-    srcConn = srcUrl.toString();
-  }
+  const srcUrl = new URL(PG_ADMIN_URL);
+  srcUrl.pathname = `/${sourceDb}`;
 
   const dstUrl = new URL(PG_ADMIN_URL);
   dstUrl.pathname = `/${targetDb}`;
 
-  const dumpProc = Bun.spawn(["pg_dump", "--format=custom", "--no-owner", "--no-acl", srcConn], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  try {
+    const dumpProc = Bun.spawn(
+      ["pg_dump", "--format=custom", "--no-owner", "--no-acl", srcUrl.toString()],
+      { stdout: "pipe", stderr: "pipe" }
+    );
 
-  const restoreProc = Bun.spawn(
-    ["pg_restore", "--no-owner", "--no-acl", `--role=${targetUser}`, "-d", dstUrl.toString()],
-    {
-      stdin: dumpProc.stdout,
-      stdout: "pipe",
-      stderr: "pipe",
+    const restoreProc = Bun.spawn(
+      ["pg_restore", "--no-owner", "--no-acl", `--role=${targetUser}`, "-d", dstUrl.toString()],
+      { stdin: dumpProc.stdout, stdout: "pipe", stderr: "pipe" }
+    );
+
+    const [dumpExit, restoreExit] = await Promise.all([dumpProc.exited, restoreProc.exited]);
+    if (dumpExit !== 0) {
+      const err = await new Response(dumpProc.stderr).text();
+      throw new Error(`pg_dump failed during clone: ${err}`);
     }
-  );
-
-  const [dumpExit, restoreExit] = await Promise.all([dumpProc.exited, restoreProc.exited]);
-  if (dumpExit !== 0) {
-    const err = await new Response(dumpProc.stderr).text();
-    throw new Error(`pg_dump failed during clone: ${err}`);
-  }
-  if (restoreExit !== 0) {
-    const err = await new Response(restoreProc.stderr).text();
-    throw new Error(`pg_restore failed during clone: ${err}`);
+    if (restoreExit !== 0) {
+      const err = await new Response(restoreProc.stderr).text();
+      throw new Error(`pg_restore failed during clone: ${err}`);
+    }
+  } catch (err) {
+    // Cleanup target DB and role if clone failed mid-stream
+    await dropSharedDatabaseAndRole(targetDb, targetUser).catch(() => {});
+    throw err;
   }
 }

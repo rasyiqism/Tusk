@@ -60,7 +60,8 @@ export async function sendAlert(
   let sent = 0;
 
   const tasks: Promise<void>[] = [];
-  const allowInternal = process.env.ALLOW_INTERNAL_WEBHOOKS === "true";
+  const allowInternal =
+    process.env.ALLOW_INTERNAL_URLS === "true" || process.env.ALLOW_INTERNAL_WEBHOOKS === "true";
 
   if (ntfyUrl) {
     const fetcher = allowInternal ? fetch : safeOutboundFetch;
@@ -131,55 +132,144 @@ export async function sendAlert(
   return { sent, channels, errors };
 }
 
+function sanitizeHeader(val: string): string {
+  return val.replace(/[\r\n]+/g, " ").trim();
+}
+
 async function sendSmtpAlert(subject: string, body: string) {
   const host = process.env.SMTP_HOST!;
   const port = Number(process.env.SMTP_PORT || 587);
-  const from = process.env.SMTP_FROM || process.env.SMTP_USER || "pg-panel@localhost";
-  const to = process.env.SMTP_TO!;
+  const from = sanitizeHeader(process.env.SMTP_FROM || process.env.SMTP_USER || "pg-panel@localhost");
+  const to = sanitizeHeader(process.env.SMTP_TO!);
   const user = process.env.SMTP_USER || "";
   const pass = process.env.SMTP_PASS || "";
+
+  let recvBuffer = "";
+  let pendingResolve: ((resp: string) => void) | null = null;
+  let pendingReject: ((err: Error) => void) | null = null;
+
+  const tryFlushSmtpResponse = () => {
+    if (!pendingResolve) return;
+    const lines = recvBuffer.split(/\r?\n/);
+    // Keep trailing incomplete fragment
+    const completeLines = lines.slice(0, -1);
+    for (let i = 0; i < completeLines.length; i++) {
+      const line = completeLines[i];
+      // Final line of SMTP reply has space after 3-digit code (e.g. "250 OK"), not "-"
+      if (/^\d{3}(?: |$)/.test(line)) {
+        const consumed = completeLines.slice(0, i + 1).join("\n") + "\n";
+        recvBuffer = recvBuffer.slice(consumed.length);
+        const resolve = pendingResolve;
+        pendingResolve = null;
+        pendingReject = null;
+        resolve(line);
+        return;
+      }
+    }
+  };
+
+  const socketHandlers = {
+    data(_sock: unknown, data: Buffer | Uint8Array) {
+      recvBuffer += Buffer.from(data).toString("utf8");
+      tryFlushSmtpResponse();
+    },
+    error(_sock: unknown, err: Error) {
+      if (pendingReject) {
+        const reject = pendingReject;
+        pendingResolve = null;
+        pendingReject = null;
+        reject(err);
+      }
+    },
+    close() {
+      if (pendingReject) {
+        const reject = pendingReject;
+        pendingResolve = null;
+        pendingReject = null;
+        reject(new Error("SMTP socket closed unexpectedly"));
+      }
+    },
+  };
+
+  const waitForCode = (expectedPrefixes: string[]): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingResolve = null;
+        pendingReject = null;
+        reject(new Error("SMTP server response timeout"));
+      }, 10_000);
+
+      pendingResolve = (line: string) => {
+        clearTimeout(timer);
+        if (!expectedPrefixes.some((p) => line.startsWith(p))) {
+          reject(new Error(`Unexpected SMTP reply: ${line}`));
+          return;
+        }
+        resolve(line);
+      };
+      pendingReject = (err: Error) => {
+        clearTimeout(timer);
+        reject(err);
+      };
+      tryFlushSmtpResponse();
+    });
+  };
 
   let activeSocket: any = await Bun.connect({
     hostname: host,
     port,
     tls: port === 465,
-    socket: {
-      data() {},
-    },
+    socket: socketHandlers,
   });
 
-  const sendLine = (line: string) => activeSocket.write(`${line}\r\n`);
-  sendLine(`EHLO pg-panel.local`);
-  await Bun.sleep(100);
+  const sendCmd = async (cmd: string, expectedPrefixes: string[]) => {
+    activeSocket.write(`${cmd}\r\n`);
+    return waitForCode(expectedPrefixes);
+  };
 
-  if (port === 587) {
-    sendLine("STARTTLS");
-    await Bun.sleep(150);
-    const [, upgraded] = activeSocket.upgradeTLS({
-      data() {},
-    });
-    activeSocket = upgraded;
-    sendLine(`EHLO pg-panel.local`);
-    await Bun.sleep(100);
-  }
+  try {
+    await waitForCode(["220"]);
+    await sendCmd("EHLO pg-panel.local", ["250"]);
 
-  if (user && pass) {
-    sendLine("AUTH LOGIN");
-    sendLine(Buffer.from(user).toString("base64"));
-    sendLine(Buffer.from(pass).toString("base64"));
+    if (port === 587) {
+      await sendCmd("STARTTLS", ["220"]);
+      const [, upgraded] = activeSocket.upgradeTLS({
+        socket: socketHandlers,
+      });
+      activeSocket = upgraded;
+      recvBuffer = "";
+      await sendCmd("EHLO pg-panel.local", ["250"]);
+    }
+
+    if (user && pass) {
+      await sendCmd("AUTH LOGIN", ["334"]);
+      await sendCmd(Buffer.from(user).toString("base64"), ["334"]);
+      await sendCmd(Buffer.from(pass).toString("base64"), ["235"]);
+    }
+
+    await sendCmd(`MAIL FROM:<${from}>`, ["250"]);
+    await sendCmd(`RCPT TO:<${to}>`, ["250", "251"]);
+    await sendCmd("DATA", ["354"]);
+
+    const safeBody = body.replace(/\r?\n\./g, "\r\n..");
+    const payload = [
+      `From: ${from}`,
+      `To: ${to}`,
+      `Subject: [PG Panel] ${sanitizeHeader(subject)}`,
+      "",
+      safeBody,
+      ".",
+    ].join("\r\n");
+
+    await sendCmd(payload, ["250"]);
+    await sendCmd("QUIT", ["221"]).catch(() => {});
+  } finally {
+    try {
+      activeSocket.end();
+    } catch {
+      // ignore close errors
+    }
   }
-  sendLine(`MAIL FROM:<${from}>`);
-  sendLine(`RCPT TO:<${to}>`);
-  sendLine("DATA");
-  sendLine(`From: ${from}`);
-  sendLine(`To: ${to}`);
-  sendLine(`Subject: [PG Panel] ${subject}`);
-  sendLine("");
-  sendLine(body);
-  sendLine(".");
-  sendLine("QUIT");
-  await Bun.sleep(200);
-  activeSocket.end();
 }
 
 export interface VpsHealth {

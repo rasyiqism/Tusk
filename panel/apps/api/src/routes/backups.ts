@@ -1,5 +1,5 @@
 import { Elysia, t } from "elysia";
-import { sqlite, type BackupRow, type InstanceRow, logAudit } from "../db/schema";
+import { sqlite, type BackupRow, type InstanceRow } from "../db/schema";
 import {
   getBackupDownloadResponse,
   restoreBackupById,
@@ -7,7 +7,6 @@ import {
   startBackupJobAsync,
   subscribeBackupJob,
 } from "../services/backup";
-import { execInContainer, runDedicatedPitrRecovery } from "../services/docker";
 import { runAutomatedRestoreTest } from "../services/restore-test";
 import { authPlugin } from "./auth";
 
@@ -56,64 +55,37 @@ export const backupRoutes = new Elysia({ prefix: "/backups" })
       }),
     }
   )
-  .post("/:id/walg-base", async ({ params, set }) => {
-    const instance = sqlite
-      .prepare("SELECT * FROM instances WHERE id = ? AND mode = 'dedicated' AND status != 'deleted'")
-      .get(params.id) as InstanceRow | undefined;
-    if (!instance || !instance.container_id) {
-      set.status = 404;
-      return { error: "Dedicated instance not found" };
-    }
-
-    const output = await execInContainer(instance.container_id, [
-      "wal-g",
-      "backup-push",
-      "/var/lib/postgresql/data",
-    ]);
-    logAudit("walg_base_backup", { instance: instance.name }, instance.id);
-    return { ok: true, output };
-  })
-  .post(
-    "/:id/pitr-restore",
-    async ({ params, body, set }) => {
-      const instance = sqlite
-        .prepare("SELECT * FROM instances WHERE id = ? AND mode = 'dedicated' AND status != 'deleted'")
-        .get(params.id) as InstanceRow | undefined;
-      if (!instance || !instance.container_id) {
-        set.status = 404;
-        return { error: "Dedicated instance not found" };
-      }
-
-      try {
-        await runBackupForInstance(instance, "pre_restore");
-        await runDedicatedPitrRecovery(instance, body.targetTime);
-        logAudit("pitr_restore", { targetTime: body.targetTime }, instance.id);
-        return {
-          ok: true,
-          message: `PITR recovery to ${body.targetTime} completed on ${instance.name}.`,
-        };
-      } catch (err) {
-        set.status = 400;
-        return { error: err instanceof Error ? err.message : String(err) };
-      }
-    },
-    {
-      body: t.Object({
-        targetTime: t.String(),
-      }),
-    }
-  )
   .post("/verify-latest", async () => {
     return runAutomatedRestoreTest();
   })
   .get("/jobs/:jobId/stream", ({ params }) => {
+    let unsubscribe: (() => void) | null = null;
+
     const stream = new ReadableStream({
       start(controller) {
         const encoder = new TextEncoder();
-        const unsubscribe = subscribeBackupJob(params.jobId, (line) => {
-          controller.enqueue(encoder.encode(`data: ${line}\n\n`));
+        let closed = false;
+
+        unsubscribe = subscribeBackupJob(params.jobId, (ev) => {
+          if (closed) return;
+          if (ev.line) {
+            controller.enqueue(encoder.encode(`data: ${ev.line}\n\n`));
+          }
+          if (ev.done) {
+            closed = true;
+            unsubscribe?.();
+            unsubscribe = null;
+            try {
+              controller.close();
+            } catch {
+              // already closed
+            }
+          }
         });
-        return () => unsubscribe();
+      },
+      cancel() {
+        unsubscribe?.();
+        unsubscribe = null;
       },
     });
 

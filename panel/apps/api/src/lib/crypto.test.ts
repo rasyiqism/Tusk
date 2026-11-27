@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   assertPgIdentifier,
+  assertPgObjectName,
   decryptSecret,
   encryptSecret,
   generateStrongPassword,
@@ -28,5 +29,14 @@ describe("crypto & identifier guards", () => {
     expect(() => assertPgIdentifier("bad; DROP TABLE users;--")).toThrow();
     expect(() => assertPgIdentifier("UppercaseName")).toThrow();
     expect(() => assertPgIdentifier("1starts_with_num")).toThrow();
+  });
+
+  test("assertPgObjectName allows Prisma/Drizzle/CamelCase tables while blocking SQL injection", () => {
+    expect(assertPgObjectName("_prisma_migrations")).toBe("_prisma_migrations");
+    expect(assertPgObjectName("__drizzle_migrations")).toBe("__drizzle_migrations");
+    expect(assertPgObjectName("UserAccounts")).toBe("UserAccounts");
+    expect(() => assertPgObjectName("users; DROP TABLE users;--")).toThrow();
+    expect(() => assertPgObjectName('bad"quote')).toThrow();
+    expect(() => assertPgObjectName("1bad")).toThrow();
   });
 });

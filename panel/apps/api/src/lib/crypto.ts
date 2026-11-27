@@ -1,9 +1,16 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
-const RAW_MASTER_KEY = process.env.MASTER_KEY || "dev-only-insecure-master-key-change-me";
+const isProd = process.env.NODE_ENV === "production";
+const RAW_MASTER_KEY = process.env.MASTER_KEY;
+
+if (isProd && (!RAW_MASTER_KEY || RAW_MASTER_KEY.length < 16)) {
+  throw new Error("FATAL: MASTER_KEY (minimum 16 characters) must be configured in production");
+}
+
+const EFFECTIVE_MASTER_KEY = RAW_MASTER_KEY || randomBytes(32).toString("hex");
 
 function deriveKey(salt: string): Buffer {
-  return scryptSync(RAW_MASTER_KEY, salt, 32);
+  return scryptSync(EFFECTIVE_MASTER_KEY, salt, 32);
 }
 
 const AES_KEY = deriveKey("pg-panel-aes-v1");
@@ -79,14 +86,28 @@ export function verifySessionToken(token: string | undefined): boolean {
 }
 
 const PG_IDENTIFIER_RE = /^[a-z][a-z0-9_]{1,62}$/;
+const PG_OBJECT_NAME_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,62}$/;
 
 /**
- * Strictly validates PostgreSQL database/role identifiers to prevent SQL injection.
+ * Strictly validates newly created PostgreSQL database/role identifiers (lowercase snake_case).
  */
 export function assertPgIdentifier(value: string, label = "identifier"): string {
   if (!PG_IDENTIFIER_RE.test(value)) {
     throw new Error(
       `Invalid ${label}: must start with lowercase letter and contain only a-z, 0-9, _ (2-63 chars)`
+    );
+  }
+  return value;
+}
+
+/**
+ * Safely validates existing PostgreSQL schema or table names (including _prisma_migrations,
+ * __drizzle_migrations, and CamelCase identifiers) without allowing SQL injection.
+ */
+export function assertPgObjectName(value: string, label = "object_name"): string {
+  if (!PG_OBJECT_NAME_RE.test(value)) {
+    throw new Error(
+      `Invalid ${label}: must start with letter or underscore and contain only A-Za-z0-9_- (1-63 chars)`
     );
   }
   return value;

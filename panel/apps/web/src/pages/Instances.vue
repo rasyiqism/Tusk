@@ -27,7 +27,7 @@ const toast = useToast();
 const instances = ref<InstanceItem[]>([]);
 const loading = ref(true);
 const searchQuery = ref("");
-const envFilter = ref<"all" | "prod" | "staging" | "dev">("all");
+const envFilter = ref<"all" | "prod" | "staging" | "dev" | "trash">("all");
 
 const createSheetOpen = ref(false);
 const initialCreateName = ref("");
@@ -55,7 +55,10 @@ const confirmAction = ref<{
 const filteredInstances = computed(() => {
   const q = searchQuery.value.trim().toLowerCase();
   return instances.value.filter((i) => {
-    const matchEnv = envFilter.value === "all" || i.env === envFilter.value;
+    const matchEnv =
+      envFilter.value === "trash"
+        ? i.status === "deleted"
+        : i.status !== "deleted" && (envFilter.value === "all" || i.env === envFilter.value);
     const matchSearch =
       !q ||
       i.name.toLowerCase().includes(q) ||
@@ -67,7 +70,7 @@ const filteredInstances = computed(() => {
 
 async function load() {
   loading.value = true;
-  const res = await api.api.instances.get();
+  const res = await api.api.instances.get({ query: { include_deleted: "1" } });
   if (Array.isArray(res.data)) {
     instances.value = res.data as InstanceItem[];
   }
@@ -90,7 +93,7 @@ async function showConnections(inst: InstanceItem) {
   if (res.data && "connectionStrings" in res.data && res.data.connectionStrings) {
     createdCreds.value = {
       dbName: inst.db_name,
-      password: "",
+      password: "password" in res.data && typeof res.data.password === "string" ? res.data.password : "",
       connectionStrings: res.data.connectionStrings,
     };
     credsSheetOpen.value = true;
@@ -100,26 +103,42 @@ async function showConnections(inst: InstanceItem) {
 async function togglePause(inst: InstanceItem) {
   const wasActive = inst.status === "active";
   if (wasActive) {
-    await api.api.instances({ id: inst.id }).pause.post();
+    const res = await api.api.instances({ id: inst.id }).pause.post();
+    if (res.error || (res.data && "error" in res.data)) {
+      toast.error(`Gagal menjeda ${inst.db_name}`);
+      return;
+    }
     await load();
     toast.info(`${inst.db_name} dijeda`, {
       undo: {
         label: "Urungkan",
         action: async () => {
-          await api.api.instances({ id: inst.id }).resume.post();
+          const r = await api.api.instances({ id: inst.id }).resume.post();
+          if (r.error) {
+            toast.error(`Gagal mengaktifkan kembali ${inst.db_name}`);
+            return;
+          }
           await load();
           toast.success(`${inst.db_name} aktif kembali`);
         },
       },
     });
   } else {
-    await api.api.instances({ id: inst.id }).resume.post();
+    const res = await api.api.instances({ id: inst.id }).resume.post();
+    if (res.error || (res.data && "error" in res.data)) {
+      toast.error(`Gagal mengaktifkan ${inst.db_name}`);
+      return;
+    }
     await load();
     toast.success(`${inst.db_name} aktif`, {
       undo: {
         label: "Urungkan",
         action: async () => {
-          await api.api.instances({ id: inst.id }).pause.post();
+          const r = await api.api.instances({ id: inst.id }).pause.post();
+          if (r.error) {
+            toast.error(`Gagal menjeda ${inst.db_name}`);
+            return;
+          }
           await load();
         },
       },
@@ -151,6 +170,34 @@ async function submitClone() {
   await load();
 }
 
+async function undeleteDb(inst: InstanceItem) {
+  const res = await api.api.instances({ id: inst.id }).undelete.post();
+  if (res.error || (res.data && "error" in res.data)) {
+    toast.error(`Gagal memulihkan ${inst.db_name}`);
+    return;
+  }
+  toast.success(`${inst.db_name} dipulihkan dari sampah`);
+  await load();
+}
+
+function purgeDb(inst: InstanceItem) {
+  confirmAction.value = {
+    title: `Hapus Permanen ${inst.name}`,
+    message: `Database ${inst.db_name}, role, dan seluruh file backup terkait akan dihapus permanen sekarang.`,
+    confirmLabel: "Hapus Permanen",
+    danger: true,
+    onConfirm: async () => {
+      const res = await api.api.instances({ id: inst.id }).delete(undefined, { query: { purge: "1" } });
+      if (res.error || (res.data && "error" in res.data)) {
+        toast.error("Gagal menghapus permanen");
+        return;
+      }
+      toast.success(`${inst.name} dihapus permanen`);
+      await load();
+    },
+  };
+}
+
 function deleteDb(inst: InstanceItem) {
   confirmAction.value = {
     title: `Hapus ${inst.name}`,
@@ -158,7 +205,14 @@ function deleteDb(inst: InstanceItem) {
     confirmLabel: "Hapus",
     danger: true,
     onConfirm: async () => {
-      await api.api.instances({ id: inst.id }).delete();
+      const res = await api.api.instances({ id: inst.id }).delete();
+      if (res.error || (res.data && "error" in res.data)) {
+        const msg =
+          (res.data && "error" in res.data && String(res.data.error)) ||
+          "Backup pre_delete gagal, penghapusan dibatalkan.";
+        toast.error(msg);
+        return;
+      }
       toast.info(`${inst.name} dipindahkan ke masa tenggang 14 hari`);
       await load();
     },
@@ -195,7 +249,15 @@ async function runConfirmedAction() {
 
 async function triggerBackup(inst: InstanceItem) {
   toast.info(`Membackup ${inst.db_name}...`);
-  await api.api.backups({ id: inst.id }).run.post();
+  const res = await api.api.backups({ id: inst.id }).run.post();
+  if (res.error || (res.data && "error" in res.data)) {
+    toast.error(`Backup ${inst.db_name} gagal`);
+    return;
+  }
+  if (res.data && "backup" in res.data && res.data.backup && res.data.backup.status === "failed") {
+    toast.error(`Backup gagal: ${res.data.backup.error_message || "error tidak diketahui"}`);
+    return;
+  }
   toast.success(`Backup ${inst.db_name} selesai`);
 }
 
@@ -226,7 +288,7 @@ onMounted(load);
 
         <div class="flex gap-1.5 overflow-x-auto snap-x snap-mandatory text-xs">
           <button
-            v-for="env in (['all', 'prod', 'staging', 'dev'] as const)"
+            v-for="env in (['all', 'prod', 'staging', 'dev', 'trash'] as const)"
             :key="env"
             @click="envFilter = env"
             :class="
@@ -236,7 +298,7 @@ onMounted(load);
             "
             class="shrink-0 snap-start rounded-lg px-2.5 py-1 uppercase transition"
           >
-            {{ env }}
+            {{ env === "trash" ? "Sampah" : env }}
           </button>
         </div>
       </div>
@@ -280,7 +342,7 @@ onMounted(load);
                 </span>
               </div>
               <div class="truncate text-[11px] text-neutral-400 font-mono">
-                {{ inst.db_username }} &middot; {{ inst.mode }}
+                {{ inst.db_username }}
               </div>
             </td>
 
@@ -289,20 +351,42 @@ onMounted(load);
                 :class="
                   inst.status === 'active'
                     ? 'border-emerald-800 bg-emerald-950/40 text-emerald-400'
-                    : 'border-amber-800 bg-amber-950/40 text-amber-400'
+                    : inst.status === 'deleted'
+                      ? 'border-rose-800 bg-rose-950/40 text-rose-400'
+                      : 'border-amber-800 bg-amber-950/40 text-amber-400'
                 "
                 class="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium"
               >
                 <span
-                  :class="inst.status === 'active' ? 'bg-emerald-400' : 'bg-amber-400'"
+                  :class="
+                    inst.status === 'active'
+                      ? 'bg-emerald-400'
+                      : inst.status === 'deleted'
+                        ? 'bg-rose-400'
+                        : 'bg-amber-400'
+                  "
                   class="h-1.5 w-1.5 rounded-full"
                 />
-                <span>{{ inst.status === "active" ? "Aktif" : "Jeda" }}</span>
+                <span>{{ inst.status === "active" ? "Aktif" : inst.status === "deleted" ? "Sampah" : "Jeda" }}</span>
               </span>
             </td>
 
             <td class="px-4 py-3 text-right sm:px-6">
-              <div class="inline-flex items-center justify-end gap-0.5">
+              <div v-if="inst.status === 'deleted'" class="inline-flex items-center justify-end gap-1">
+                <button
+                  @click="undeleteDb(inst)"
+                  class="rounded-lg border border-neutral-800 bg-neutral-900 px-2.5 py-1 text-xs font-medium text-emerald-400 transition hover:bg-neutral-800"
+                >
+                  Pulihkan
+                </button>
+                <button
+                  @click="purgeDb(inst)"
+                  class="rounded-lg border border-rose-900/60 bg-rose-950/40 px-2.5 py-1 text-xs font-medium text-rose-400 transition hover:bg-rose-950"
+                >
+                  Hapus Permanen
+                </button>
+              </div>
+              <div v-else class="inline-flex items-center justify-end gap-0.5">
                 <button
                   @click="router.push(`/instances/${inst.id}/tables`)"
                   aria-label="Tabel"

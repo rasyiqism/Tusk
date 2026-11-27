@@ -10,16 +10,47 @@ import { instanceRoutes } from "./routes/instances";
 import { monitorRoutes } from "./routes/monitor";
 import { backupRoutes } from "./routes/backups";
 import { settingsRoutes } from "./routes/settings";
-import { cleanupExpiredBackups, runBackupForInstance } from "./services/backup";
+import {
+  cleanupExpiredBackups,
+  deleteBackupFilesByInstance,
+  runBackupForInstance,
+} from "./services/backup";
 import { getPanelSettings, getVpsHealth, sendAlert } from "./services/alert";
 import { runAutomatedRestoreTest } from "./services/restore-test";
-import { controlDedicatedContainer } from "./services/docker";
-import { pgAdmin } from "./services/postgres";
-import { assertPgIdentifier } from "./lib/crypto";
+import { dropSharedDatabaseAndRole } from "./services/postgres";
 
 const publicDir = join(import.meta.dir, "..", "public");
 
+const allowedCorsOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  : [];
+
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
 const api = new Elysia({ prefix: "/api" })
+  .onBeforeHandle(({ request, set }) => {
+    if (!MUTATING_METHODS.has(request.method)) return;
+
+    const secFetchSite = request.headers.get("sec-fetch-site");
+    const origin = request.headers.get("origin");
+
+    if (secFetchSite === "cross-site" && (!origin || !allowedCorsOrigins.includes(origin))) {
+      set.status = 403;
+      return { error: "CSRF validation failed: cross-site request blocked" };
+    }
+
+    if (origin) {
+      const host = request.headers.get("x-forwarded-host") || request.headers.get("host");
+      const sameOrigin =
+        host !== null && (origin === `http://${host}` || origin === `https://${host}`);
+      if (!sameOrigin && !allowedCorsOrigins.includes(origin)) {
+        set.status = 403;
+        return { error: "CSRF validation failed: Origin mismatch" };
+      }
+    }
+  })
   .get("/health", () => ({ ok: true, time: new Date().toISOString() }))
   .use(authRoutes)
   .use(instanceRoutes)
@@ -28,14 +59,19 @@ const api = new Elysia({ prefix: "/api" })
   .use(settingsRoutes);
 
 export const app = new Elysia()
-  .use(cors({ origin: true, credentials: true }))
+  .use(
+    cors({
+      origin: allowedCorsOrigins.length > 0 ? allowedCorsOrigins : false,
+      credentials: true,
+    })
+  )
   .use(
     cron({
       name: "daily-shared-backup",
       pattern: "0 2 * * *",
       async run() {
         const instances = sqlite
-          .prepare("SELECT * FROM instances WHERE status = 'active' AND mode = 'shared'")
+          .prepare("SELECT * FROM instances WHERE status = 'active'")
           .all() as InstanceRow[];
         for (const inst of instances) {
           await runBackupForInstance(inst, "scheduled");
@@ -92,14 +128,9 @@ export const app = new Elysia()
 
         for (const inst of expiredInstances) {
           try {
-            if (inst.mode === "dedicated" && inst.container_id) {
-              await controlDedicatedContainer(inst.container_id, "remove", inst.name);
-            } else {
-              const db = assertPgIdentifier(inst.db_name, "db_name");
-              const user = assertPgIdentifier(inst.db_username, "db_username");
-              await pgAdmin.unsafe(`DROP DATABASE IF EXISTS "${db}"`);
-              await pgAdmin.unsafe(`DROP ROLE IF EXISTS "${user}"`);
-            }
+            await deleteBackupFilesByInstance(inst.id);
+            await dropSharedDatabaseAndRole(inst.db_name, inst.db_username);
+
             const purgeTx = sqlite.transaction((instanceId: string) => {
               sqlite.prepare("DELETE FROM backups WHERE instance_id = ?").run(instanceId);
               sqlite

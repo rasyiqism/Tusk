@@ -10,19 +10,32 @@ import {
   buildConnectionStrings,
   cloneSharedDatabase,
   createSharedDatabase,
+  dropSharedDatabaseAndRole,
   getInstanceAdminUrl,
   pauseSharedDatabase,
   resetRolePassword,
   resumeSharedDatabase,
 } from "../services/postgres";
 import { getDatabaseTables, getTableColumns, getTablePreview } from "../services/pg-inspector";
-import { runBackupForInstance } from "../services/backup";
-import {
-  controlDedicatedContainer,
-  recreateDedicatedPgbouncer,
-  spawnDedicatedContainer,
-} from "../services/docker";
+import { deleteBackupFilesByInstance, runBackupForInstance } from "../services/backup";
 import { authPlugin } from "./auth";
+
+function assertInstanceUniqueInSqlite(name: string, dbName: string, username: string) {
+  const conflict = sqlite
+    .prepare(
+      `SELECT name, db_name, db_username, status
+       FROM instances
+       WHERE name = ? OR db_name = ? OR db_username = ?
+       LIMIT 1`
+    )
+    .get(name, dbName, username) as
+    | { name: string; db_name: string; db_username: string; status: string }
+    | undefined;
+  if (conflict) {
+    const suffix = conflict.status === "deleted" ? " (saat ini berada di Sampah; pulihkan atau hapus permanen dulu)" : "";
+    throw new Error(`Nama instance/database/username sudah terdaftar${suffix}`);
+  }
+}
 
 export const instanceRoutes = new Elysia({ prefix: "/instances" })
   .use(authPlugin)
@@ -32,17 +45,27 @@ export const instanceRoutes = new Elysia({ prefix: "/instances" })
       return { error: "Unauthorized" };
     }
   })
-  .get("/", () => {
-    const rows = sqlite
-      .prepare("SELECT * FROM instances WHERE status != 'deleted' ORDER BY created_at DESC")
-      .all() as InstanceRow[];
+  .get(
+    "/",
+    ({ query }) => {
+      const sql =
+        query.include_deleted === "1"
+          ? "SELECT * FROM instances ORDER BY created_at DESC"
+          : "SELECT * FROM instances WHERE status != 'deleted' ORDER BY created_at DESC";
+      const rows = sqlite.prepare(sql).all() as InstanceRow[];
 
-    return rows.map((row) => ({
-      ...row,
-      encrypted_password: undefined,
-      has_saved_password: Boolean(row.encrypted_password),
-    }));
-  })
+      return rows.map((row) => ({
+        ...row,
+        encrypted_password: undefined,
+        has_saved_password: Boolean(row.encrypted_password),
+      }));
+    },
+    {
+      query: t.Object({
+        include_deleted: t.Optional(t.String()),
+      }),
+    }
+  )
   .post(
     "/",
     async ({ body, set }) => {
@@ -50,69 +73,38 @@ export const instanceRoutes = new Elysia({ prefix: "/instances" })
         const name = assertPgIdentifier(body.name, "name");
         const dbName = assertPgIdentifier(body.db_name || name, "db_name");
         const username = assertPgIdentifier(body.db_username || `${name}_user`, "db_username");
+        assertInstanceUniqueInSqlite(name, dbName, username);
+
         const password = generateStrongPassword(20);
         const id = crypto.randomUUID();
 
-        const mode = body.mode || "shared";
-        const pgVersion = (body.pg_version === "18" ? "18" : "17") as "17" | "18";
-
-        let containerId: string | null = null;
-        let directPort = 5432;
-        let txPoolPort = 6432;
-        let cpuLimit: number | null = null;
-        let ramLimitMb: number | null = null;
-        let backupStrategy: "pg_dump" | "pitr_walg" = "pg_dump";
-
-        if (mode === "dedicated") {
-          cpuLimit = body.cpu_limit ?? 1;
-          ramLimitMb = body.ram_limit_mb ?? 512;
-          directPort = body.direct_port ?? 5440 + Math.floor(Math.random() * 400);
-          txPoolPort = directPort + 1000;
-          backupStrategy = body.enable_walg ? "pitr_walg" : "pg_dump";
-          containerId = await spawnDedicatedContainer({
-            instanceId: id,
-            name,
-            dbName,
-            dbUsername: username,
-            password,
-            pgVersion,
-            cpuLimit,
-            ramLimitMb,
-            hostPort: directPort,
-            enableWalg: body.enable_walg,
-          });
-        } else {
-          await createSharedDatabase(dbName, username, password);
-        }
+        await createSharedDatabase(dbName, username, password);
 
         const encryptedPassword = encryptSecret(password);
-        sqlite
-          .prepare(
-            `INSERT INTO instances (
-              id, name, mode, env, pg_version, db_name, db_username, encrypted_password,
-              container_id, direct_port, tx_pool_port, cpu_limit, ram_limit_mb,
-              backup_strategy, retention_days, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`
-          )
-          .run(
-            id,
-            name,
-            mode,
-            body.env,
-            pgVersion,
-            dbName,
-            username,
-            encryptedPassword,
-            containerId,
-            directPort,
-            txPoolPort,
-            cpuLimit,
-            ramLimitMb,
-            backupStrategy,
-            body.retention_days ?? 14
-          );
+        try {
+          sqlite
+            .prepare(
+              `INSERT INTO instances (
+                id, name, mode, env, pg_version, db_name, db_username, encrypted_password,
+                direct_port, tx_pool_port, session_pool_port,
+                backup_strategy, retention_days, status
+              ) VALUES (?, ?, 'shared', ?, '17', ?, ?, ?, 5432, 6432, 5432, 'pg_dump', ?, 'active')`
+            )
+            .run(
+              id,
+              name,
+              body.env,
+              dbName,
+              username,
+              encryptedPassword,
+              body.retention_days ?? 14
+            );
+        } catch (dbErr) {
+          await dropSharedDatabaseAndRole(dbName, username).catch(() => {});
+          throw dbErr;
+        }
 
-        logAudit("create", { name, mode, dbName, username, env: body.env, containerId }, id);
+        logAudit("create", { name, mode: "shared", dbName, username, env: body.env }, id);
 
         const instance = sqlite
           .prepare("SELECT * FROM instances WHERE id = ?")
@@ -124,15 +116,7 @@ export const instanceRoutes = new Elysia({ prefix: "/instances" })
             encrypted_password: undefined,
           },
           password,
-          connectionStrings: buildConnectionStrings(
-            dbName,
-            username,
-            password,
-            instance.tx_pool_port,
-            instance.session_pool_port,
-            directPort,
-            mode === "dedicated" ? `pgb-ded-${name}` : "pgbouncer-tx"
-          ),
+          connectionStrings: buildConnectionStrings(dbName, username, password),
         };
       } catch (err) {
         set.status = 400;
@@ -142,15 +126,9 @@ export const instanceRoutes = new Elysia({ prefix: "/instances" })
     {
       body: t.Object({
         name: t.String(),
-        mode: t.Optional(t.Union([t.Literal("shared"), t.Literal("dedicated")])),
         env: t.Union([t.Literal("prod"), t.Literal("staging"), t.Literal("dev")]),
         db_name: t.Optional(t.String()),
         db_username: t.Optional(t.String()),
-        pg_version: t.Optional(t.String()),
-        cpu_limit: t.Optional(t.Number()),
-        ram_limit_mb: t.Optional(t.Number()),
-        direct_port: t.Optional(t.Number()),
-        enable_walg: t.Optional(t.Boolean()),
         retention_days: t.Optional(t.Number()),
       }),
     }
@@ -167,15 +145,8 @@ export const instanceRoutes = new Elysia({ prefix: "/instances" })
       ? decryptSecret(row.encrypted_password)
       : "<RESET_PASSWORD_REQUIRED>";
     return {
-      connectionStrings: buildConnectionStrings(
-        row.db_name,
-        row.db_username,
-        password,
-        row.tx_pool_port,
-        row.session_pool_port,
-        row.direct_port,
-        row.mode === "dedicated" ? `pgb-ded-${row.name}` : "pgbouncer-tx"
-      ),
+      password,
+      connectionStrings: buildConnectionStrings(row.db_name, row.db_username, password),
     };
   })
   .get("/:id/tables", async ({ params, set }) => {
@@ -246,26 +217,7 @@ export const instanceRoutes = new Elysia({ prefix: "/instances" })
     }
 
     const newPassword = generateStrongPassword(20);
-    await resetRolePassword(
-      row.db_username,
-      newPassword,
-      row.mode === "dedicated" ? getInstanceAdminUrl(row) : undefined
-    );
-
-    if (row.mode === "dedicated") {
-      await recreateDedicatedPgbouncer({
-        instanceId: row.id,
-        name: row.name,
-        dbName: row.db_name,
-        dbUsername: row.db_username,
-        password: newPassword,
-        pgVersion: row.pg_version === "18" ? "18" : "17",
-        cpuLimit: row.cpu_limit ?? 1,
-        ramLimitMb: row.ram_limit_mb ?? 512,
-        hostPort: row.direct_port,
-        enableWalg: row.backup_strategy === "pitr_walg",
-      });
-    }
+    await resetRolePassword(row.db_username, newPassword);
 
     sqlite
       .prepare("UPDATE instances SET encrypted_password = ? WHERE id = ?")
@@ -275,15 +227,7 @@ export const instanceRoutes = new Elysia({ prefix: "/instances" })
 
     return {
       password: newPassword,
-      connectionStrings: buildConnectionStrings(
-        row.db_name,
-        row.db_username,
-        newPassword,
-        row.tx_pool_port,
-        row.session_pool_port,
-        row.direct_port,
-        row.mode === "dedicated" ? `pgb-ded-${row.name}` : "pgbouncer-tx"
-      ),
+      connectionStrings: buildConnectionStrings(row.db_name, row.db_username, newPassword),
     };
   })
   .post("/:id/pause", async ({ params, set }) => {
@@ -294,13 +238,9 @@ export const instanceRoutes = new Elysia({ prefix: "/instances" })
       set.status = 404;
       return { error: "Active instance not found" };
     }
-    if (row.mode === "dedicated" && row.container_id) {
-      await controlDedicatedContainer(row.container_id, "pause", row.name);
-    } else {
-      await pauseSharedDatabase(row.db_name, row.db_username);
-    }
+    await pauseSharedDatabase(row.db_name, row.db_username);
     sqlite.prepare("UPDATE instances SET status = 'paused' WHERE id = ?").run(row.id);
-    logAudit("pause", { db_name: row.db_name, mode: row.mode }, row.id);
+    logAudit("pause", { db_name: row.db_name }, row.id);
     return { ok: true, status: "paused" };
   })
   .post("/:id/resume", async ({ params, set }) => {
@@ -311,13 +251,24 @@ export const instanceRoutes = new Elysia({ prefix: "/instances" })
       set.status = 404;
       return { error: "Paused instance not found" };
     }
-    if (row.mode === "dedicated" && row.container_id) {
-      await controlDedicatedContainer(row.container_id, "unpause", row.name);
-    } else {
-      await resumeSharedDatabase(row.db_name, row.db_username);
-    }
+    await resumeSharedDatabase(row.db_name, row.db_username);
     sqlite.prepare("UPDATE instances SET status = 'active' WHERE id = ?").run(row.id);
-    logAudit("resume", { db_name: row.db_name, mode: row.mode }, row.id);
+    logAudit("resume", { db_name: row.db_name }, row.id);
+    return { ok: true, status: "active" };
+  })
+  .post("/:id/undelete", async ({ params, set }) => {
+    const row = sqlite
+      .prepare("SELECT * FROM instances WHERE id = ? AND status = 'deleted'")
+      .get(params.id) as InstanceRow | undefined;
+    if (!row) {
+      set.status = 404;
+      return { error: "Deleted instance not found" };
+    }
+    await resumeSharedDatabase(row.db_name, row.db_username);
+    sqlite
+      .prepare("UPDATE instances SET status = 'active', deleted_at = NULL WHERE id = ?")
+      .run(row.id);
+    logAudit("undelete", { db_name: row.db_name }, row.id);
     return { ok: true, status: "active" };
   })
   .post(
@@ -335,34 +286,35 @@ export const instanceRoutes = new Elysia({ prefix: "/instances" })
         const targetName = assertPgIdentifier(body.target_name, "target_name");
         const targetDb = assertPgIdentifier(body.target_db_name || targetName, "target_db_name");
         const targetUser = assertPgIdentifier(`${targetName}_user`, "target_user");
+        assertInstanceUniqueInSqlite(targetName, targetDb, targetUser);
+
         const password = generateStrongPassword(20);
         const id = crypto.randomUUID();
 
-        await cloneSharedDatabase(
-          source.db_name,
-          targetDb,
-          targetUser,
-          password,
-          source.mode === "dedicated" ? getInstanceAdminUrl(source) : undefined
-        );
+        await cloneSharedDatabase(source.db_name, targetDb, targetUser, password);
 
-        sqlite
-          .prepare(
-            `INSERT INTO instances (
-              id, name, mode, env, pg_version, db_name, db_username, encrypted_password,
-              backup_strategy, retention_days, status
-            ) VALUES (?, ?, 'shared', ?, ?, ?, ?, ?, 'pg_dump', ?, 'active')`
-          )
-          .run(
-            id,
-            targetName,
-            body.env || "staging",
-            source.pg_version,
-            targetDb,
-            targetUser,
-            encryptSecret(password),
-            source.retention_days
-          );
+        try {
+          sqlite
+            .prepare(
+              `INSERT INTO instances (
+                id, name, mode, env, pg_version, db_name, db_username, encrypted_password,
+                direct_port, tx_pool_port, session_pool_port,
+                backup_strategy, retention_days, status
+              ) VALUES (?, ?, 'shared', ?, '17', ?, ?, ?, 5432, 6432, 5432, 'pg_dump', ?, 'active')`
+            )
+            .run(
+              id,
+              targetName,
+              body.env || "staging",
+              targetDb,
+              targetUser,
+              encryptSecret(password),
+              source.retention_days
+            );
+        } catch (dbErr) {
+          await dropSharedDatabaseAndRole(targetDb, targetUser).catch(() => {});
+          throw dbErr;
+        }
 
         logAudit("clone", { sourceDb: source.db_name, targetDb }, id);
 
@@ -387,27 +339,61 @@ export const instanceRoutes = new Elysia({ prefix: "/instances" })
       }),
     }
   )
-  .delete("/:id", async ({ params, set }) => {
-    const row = sqlite
-      .prepare("SELECT * FROM instances WHERE id = ? AND status != 'deleted'")
-      .get(params.id) as InstanceRow | undefined;
-    if (!row) {
-      set.status = 404;
-      return { error: "Instance not found" };
-    }
+  .delete(
+    "/:id",
+    async ({ params, query, set }) => {
+      const row = sqlite
+        .prepare("SELECT * FROM instances WHERE id = ?")
+        .get(params.id) as InstanceRow | undefined;
+      if (!row) {
+        set.status = 404;
+        return { error: "Instance not found" };
+      }
 
-    // Trigger safety backup before disabling & soft-deleting
-    if (row.mode === "dedicated" && row.container_id) {
-      await controlDedicatedContainer(row.container_id, "stop", row.name);
-    } else {
-      await runBackupForInstance(row, "pre_delete");
+      if (query.purge === "1") {
+        await deleteBackupFilesByInstance(row.id);
+        await dropSharedDatabaseAndRole(row.db_name, row.db_username);
+
+        const purgeTx = sqlite.transaction((instanceId: string) => {
+          sqlite.prepare("DELETE FROM backups WHERE instance_id = ?").run(instanceId);
+          sqlite
+            .prepare("UPDATE audit_events SET instance_id = NULL WHERE instance_id = ?")
+            .run(instanceId);
+          sqlite.prepare("DELETE FROM instances WHERE id = ?").run(instanceId);
+        });
+        purgeTx(row.id);
+
+        logAudit("purge", { db_name: row.db_name }, null);
+        return { ok: true, purged: true };
+      }
+
+      if (row.status === "deleted") {
+        set.status = 400;
+        return { error: "Instance is already in trash (pass ?purge=1 to permanently delete)" };
+      }
+
+      // Trigger safety backup before disabling & soft-deleting
+      const safetyBackup = await runBackupForInstance(row, "pre_delete");
+      if (safetyBackup.status !== "success" && query.force !== "1") {
+        set.status = 500;
+        return {
+          error: `Safety pre_delete backup failed (${safetyBackup.error_message || "unknown error"}). Delete aborted.`,
+        };
+      }
+
       await pauseSharedDatabase(row.db_name, row.db_username);
+
+      sqlite
+        .prepare("UPDATE instances SET status = 'deleted', deleted_at = datetime('now') WHERE id = ?")
+        .run(row.id);
+
+      logAudit("delete", { db_name: row.db_name, forced: query.force === "1" }, row.id);
+      return { ok: true };
+    },
+    {
+      query: t.Object({
+        force: t.Optional(t.String()),
+        purge: t.Optional(t.String()),
+      }),
     }
-
-    sqlite
-      .prepare("UPDATE instances SET status = 'deleted', deleted_at = datetime('now') WHERE id = ?")
-      .run(row.id);
-
-    logAudit("delete", { db_name: row.db_name }, row.id);
-    return { ok: true };
-  });
+  );
