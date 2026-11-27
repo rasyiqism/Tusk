@@ -15,7 +15,7 @@ Dirancang khusus untuk mengelola puluhan database proyek dan website pada satu V
    ```bash
    docker compose up -d --build
    ```
-3. Buka panel di `http://localhost:3000`.
+3. Buka panel di `http://127.0.0.1:4310` (atau via domain HTTPS Traefik Dokploy yang diarahkan ke container port `3000`).
 
 ## Fitur Utama
 

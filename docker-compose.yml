@@ -74,8 +74,10 @@ services:
         condition: service_healthy
       pgbouncer:
         condition: service_started
+    expose:
+      - "3000"
     ports:
-      - "${PANEL_PORT:-3000}:3000"
+      - "${PANEL_BIND_IP:-127.0.0.1}:${PANEL_PORT:-4310}:3000"
     environment:
       PG_ADMIN_URL: postgres://postgres:${PG_SUPERUSER_PASSWORD:?Set PG_SUPERUSER_PASSWORD in Dokploy Environment or .env}@postgres:5432/postgres
       PGB_ADMIN_URL: postgres://postgres:${PG_SUPERUSER_PASSWORD}@pgbouncer:6432/pgbouncer
