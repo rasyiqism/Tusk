@@ -10,6 +10,10 @@
     "dev:web": "bun --filter @panel/web dev",
     "build:web": "bun --filter @panel/web build",
     "typecheck": "bun --filter @panel/api typecheck && bun --filter @panel/web typecheck",
-    "test": "bun --filter @panel/api test"
+    "test": "bun --filter @panel/api test",
+    "prepare": "[ -d ../.git ] && (cd .. && ./panel/node_modules/.bin/husky) || true"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7"
   }
 }

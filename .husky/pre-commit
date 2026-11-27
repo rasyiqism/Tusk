@@ -1,0 +1,2 @@
+bash -n scripts/init-secrets.sh scripts/cold-dr.sh
+cd panel && bun run typecheck

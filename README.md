@@ -27,12 +27,22 @@ Dirancang khusus untuk mengelola puluhan database proyek dan website pada satu V
 * **Backup & DR Andal:** Streaming `pg_dump` terenkripsi (`aes-256-cbc`) ke S3-compatible / lokal, download `.dump` terdekripsi otomatis, 1-Click Restore, dan Uji Integritas Arsip berkala.
 * **Keamanan & Alert:** Kontainer panel berjalan *unprivileged* (tanpa mount `docker.sock`), session auth Argon2id + HMAC, TOTP 2FA opsional, Audit Log, serta notifikasi via `ntfy`, Webhook, atau SMTP.
 
-## Pengujian & Build Lokal
+## Pengujian, CI/CD & Rilis Docker
 
-```bash
-cd panel
-bun install
-bun run typecheck
-bun run test
-bun run build:web
-```
+* **Git Hooks (Husky):**
+  * `pre-commit`: validasi skrip shell & `bun run typecheck`.
+  * `pre-push`: `bun run test` & `bun run build:web`.
+* **GitHub Actions & Docker GHCR:**
+  * Push tag semver (misal `git tag v2.2.0 && git push origin v2.2.0`) akan menjalankan verifikasi, membangun image multi-arch (`linux/amd64`, `linux/arm64`) ke `ghcr.io/rasyiqism/tusk`, serta membuat GitHub Release otomatis.
+  * Menjalankan image prebuilt:
+    ```bash
+    PANEL_IMAGE=ghcr.io/rasyiqism/tusk:latest docker compose up -d
+    ```
+* **Pengujian & build lokal:**
+  ```bash
+  cd panel
+  bun install
+  bun run typecheck
+  bun run test
+  bun run build:web
+  ```

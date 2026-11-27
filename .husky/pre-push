@@ -1,0 +1,1 @@
+cd panel && bun run test && bun run build:web

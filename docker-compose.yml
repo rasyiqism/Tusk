@@ -62,6 +62,7 @@ services:
       - pg_internal
 
   pg-panel:
+    image: ${PANEL_IMAGE:-tusk-pg-panel:local}
     build: ./panel
     restart: unless-stopped
     depends_on:
