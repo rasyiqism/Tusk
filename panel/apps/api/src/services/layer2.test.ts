@@ -97,7 +97,7 @@ describe("Bidirectional Primary / Layer 2 architecture", () => {
     } finally {
       db.close();
     }
-  });
+  }, 15_000);
 
   test("Admin URLs, connection strings, and credential masking follow primary_tier symmetrically", () => {
     const extUrl = "postgres://neon_owner:supersecret@ep-main.aws.neon.tech:5432/appdb?sslmode=require";

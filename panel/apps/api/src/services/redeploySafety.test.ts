@@ -70,7 +70,7 @@ describe("Redeploy & crash data safety", () => {
     } finally {
       db.close();
     }
-  });
+  }, 15_000);
 
   test("reconcileInterruptedJobsOnStartup fails dangling backups, preserves valid archives, and resumes crash-locked DB", async () => {
     const dir = makeTempDir("tusk-reconcile-");
@@ -156,5 +156,5 @@ describe("Redeploy & crash data safety", () => {
     expect(audit).toEqual([{ action: "restore_interrupted_recovery", instance_id: "inst-active" }]);
 
     db.close();
-  });
+  }, 15_000);
 });

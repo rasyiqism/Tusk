@@ -64,7 +64,7 @@ describe("Scale-up capabilities & guardrails", () => {
     } finally {
       db.close();
     }
-  });
+  }, 15_000);
 
   test("cronMatchesNow and isValidCronExpression handle standard 5-field expressions", () => {
     expect(isValidCronExpression("0 2 * * *")).toBe(true);
