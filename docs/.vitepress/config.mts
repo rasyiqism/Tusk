@@ -17,7 +17,7 @@ function rewriteIncludedRepoLink(href: string): string {
 export default withMermaid({
   title: "Tusk",
   description: "Self-hosted PostgreSQL Control Panel — Bun, PgBouncer, S3 Backups, and Bidirectional Layer 2",
-  base: "/Tusk/",
+  base: "/",
   appearance: false,
   cleanUrls: true,
   lastUpdated: true,
@@ -35,7 +35,7 @@ export default withMermaid({
     },
   },
   head: [
-    ["link", { rel: "icon", type: "image/svg+xml", href: "/Tusk/logo.svg" }],
+    ["link", { rel: "icon", type: "image/svg+xml", href: "/logo.svg" }],
   ],
 
   markdown: {
